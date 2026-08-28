@@ -1,0 +1,20 @@
+# Third-party reference files, kept locally, never redistributed
+/vendor/
+
+# Test tiles and images produced by the benches
+tiles/
+proof/
+out/
+.tilecache/
+
+# Packages built for the Store
+*.zip
+promo/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local editor and tooling folders
+.*/
+!.github/

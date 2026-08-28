@@ -1,0 +1,121 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wplace WorldView</title>
+<!--
+  The popup is NOT a settings panel: the settings live on the map, behind the
+  button added to wplace's toolbar. This is where you land when you are after
+  help, or after someone to write to — so that is what it is for, and nothing
+  else.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --text: #16181d;
+    --muted: #5b6270;
+    --line: #e3e7ee;
+    --hover: #f2f5fa;
+    --blue: #1c61e7;
+  }
+  /* The theme follows the system. The data-theme attribute exists only so the
+     preview can force one or the other: an @media rule cannot be driven
+     from the page. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16181d; --text: #e7eaf0; --muted: #9aa2b1;
+      --line: #262a33; --hover: #1e222a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16181d; --text: #e7eaf0; --muted: #9aa2b1;
+    --line: #262a33; --hover: #1e222a;
+  }
+  * { box-sizing: border-box }
+  body {
+    width: 300px; margin: 0; padding: 18px 18px 14px;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .tete { display: flex; align-items: center; gap: 11px }
+  .tete svg { width: 42px; height: 42px; flex: none }
+  h1 { margin: 0; font-size: 14px; letter-spacing: .2px }
+  .version { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums }
+  .quoi { margin: 13px 0 0; color: var(--muted); font-size: 12px }
+  .ou {
+    margin: 12px 0 0; padding: 9px 11px 10px; border-radius: 9px;
+    background: var(--hover); color: var(--muted); font-size: 12px;
+  }
+  /* The button that lights the bubble back up on the map. Full width: it is
+     the only action on this page, everything else is nothing but links. */
+  .montre {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    width: 100%; margin-top: 9px; padding: 8px 10px;
+    border: 0; border-radius: 7px; cursor: pointer;
+    background: var(--blue); color: #fff;
+    font: 600 12.5px/1.2 inherit;
+  }
+  .montre:hover { filter: brightness(1.08) }
+  .montre:active { transform: translateY(1px) }
+  .montre:disabled { opacity: .6; cursor: default; transform: none; filter: none }
+  .montre svg { width: 15px; height: 15px; flex: none }
+  .liens { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 8px }
+  a {
+    display: flex; align-items: center; gap: 9px;
+    margin: 0 -8px; padding: 8px; border-radius: 8px;
+    color: inherit; text-decoration: none; font-size: 12.5px;
+  }
+  a:hover { background: var(--hover) }
+  a svg { width: 16px; height: 16px; flex: none; color: var(--muted) }
+  a .detail { margin-left: auto; color: var(--muted); font-size: 11px }
+  footer { margin-top: 10px; color: var(--muted); font-size: 11px; text-align: center }
+</style>
+
+<div class="tete">
+  <!-- Same shape and same colors as the icon: the globe from the wplace
+       button, in ocean blue and continent green, lifted from their own logo. -->
+  <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <g transform="translate(6,6) scale(0.0917) translate(0,960)">
+      <circle cx="480" cy="-480" r="444" fill="#000000"/>
+      <circle cx="480" cy="-480" r="400" fill="#4AD95B"/>
+      <path fill="#1C61E7" d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-82v-78q-33 0-56.5-23.5T360-320v-40L168-552q-3 18-5.5 36t-2.5 36q0 121 79.5 212T440-162Zm276-102q20-22 36-47.5t26.5-53q10.5-27.5 16-56.5t5.5-59q0-98-54.5-179T600-776v16q0 33-23.5 56.5T520-680h-80v80q0 17-11.5 28.5T400-560h-80v80h240q17 0 28.5 11.5T600-440v120h40q26 0 47 15.5t29 40.5Z"/>
+    </g>
+  </svg>
+  <div>
+    <h1 id="nom">Wplace WorldView</h1>
+    <div class="version" id="version"></div>
+  </div>
+</div>
+
+<p class="quoi" id="quoi"></p>
+<div class="ou">
+  <span id="ou"></span>
+  <!-- The globe is exactly the one on the button placed in wplace's bar:
+       it is the image we are asking the user to go and recognize. -->
+  <button class="montre" id="montre" type="button">
+    <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm-40-82v-78q-33 0-56.5-23.5T360-320v-40L168-552q-3 18-5.5 36t-2.5 36q0 121 79.5 212T440-162Zm276-102q20-22 36-47.5t26.5-53q10.5-27.5 16-56.5t5.5-59q0-98-54.5-179T600-776v16q0 33-23.5 56.5T520-680h-80v80q0 17-11.5 28.5T400-560h-80v80h240q17 0 28.5 11.5T600-440v120h40q26 0 47 15.5t29 40.5Z"></path></svg>
+    <span id="txtMontre"></span>
+  </button>
+</div>
+
+<nav class="liens">
+  <a id="lienAide" href="#" target="_blank" rel="noopener noreferrer">
+    <svg viewBox="0 -960 960 960" fill="currentColor"><path d="M478-240q21 0 35.5-14.5T528-290q0-21-14.5-35.5T478-340q-21 0-35.5 14.5T428-290q0 21 14.5 35.5T478-240Zm-36-154h74q0-33 7.5-52t42.5-52q26-26 41-49.5t15-56.5q0-56-41-86t-97-30q-57 0-92.5 30T342-618l66 26q5-18 22.5-39t53.5-21q32 0 48 17.5t16 38.5q0 20-12 37.5T506-526q-44 39-54 59t-10 73Zm38 314q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Z"/></svg>
+    <span id="txtAide"></span><span class="detail">GitHub</span>
+  </a>
+  <a id="lienBogue" href="#" target="_blank" rel="noopener noreferrer">
+    <svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-200q66 0 113-47t47-113v-160q0-66-47-113t-113-47q-66 0-113 47t-47 113v160q0 66 47 113t113 47Zm-40-120h80v-80h-80v80Zm0-160h80v-80h-80v80Zm40 40Zm0 320q-65 0-120.5-32T272-240H160v-80h84q-3-20-3.5-40t-.5-40h-80v-80h80q0-20 .5-40t3.5-40h-84v-80h112q14-23 31.5-43t40.5-35l-64-66 56-56 86 86q28-9 57-9t57 9l88-86 56 56-66 66q23 15 41 34.5t32 43.5h112v80h-84q3 20 3.5 40t.5 40h80v80h-80q0 20-.5 40t-3.5 40h84v80H688q-32 56-87.5 88T480-40Z"/></svg>
+    <span id="txtBogue"></span><span class="detail">GitHub</span>
+  </a>
+  <a id="lienCourriel" href="#">
+    <svg viewBox="0 -960 960 960" fill="currentColor"><path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm320-280L160-640v400h640v-400L480-440Zm0-80 320-200H160l320 200ZM160-640v-80 480-400Z"/></svg>
+    <span id="txtCourriel"></span><span class="detail" id="courriel"></span>
+  </a>
+  <a id="lienVie" href="#" target="_blank" rel="noopener noreferrer">
+    <svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-80q-139-35-229.5-159.5T160-516v-244l320-120 320 120v244q0 152-90.5 276.5T480-80Zm0-84q104-33 172-132t68-220v-189l-240-90-240 90v189q0 121 68 220t172 132Zm0-316Z"/></svg>
+    <span id="txtVie"></span>
+  </a>
+</nav>
+
+<footer id="pied"></footer>
+<script src="language.js"></script>
+<script src="popup.js"></script>

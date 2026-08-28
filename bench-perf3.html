@@ -1,0 +1,180 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Measurement bench -- critical assumptions</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px;margin:0}
+  h2{font-size:13px;margin:20px 0 6px;color:#7ee7a8}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .fort{color:#ffb454} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+</style>
+<div id="log">measuring...</div>
+
+<script type="module">
+const CACHEBUST = '?v=' + Date.now();
+const el = document.getElementById('log');
+const L = [];
+const say = (s) => { L.push(s); el.innerHTML = L.join('\n'); };
+const chk = (n, c, d) => say(`${c ? '<span class=ok>[OK]  </span>' : '<span class=ko>[FAIL]</span>'} ${n}${d ? '  <span class=dim>-- ' + d + '</span>' : ''}`);
+const kb = (n) => (n / 1024).toFixed(0);
+const timeIt = async (n, f) => {
+  const t = [];
+  for (let i = 0; i < n; i++) { const a = performance.now(); await f(); t.push(performance.now() - a); }
+  t.sort((x, y) => x - y); return t[t.length >> 1];
+};
+
+const { decodeTile, toImageData, PALETTE } = await import('./extension/decoder.js' + CACHEBUST);
+const zst = new Uint8Array(await (await fetch('./tiles/6_32_22.zst')).arrayBuffer());
+const { width, height, index } = decodeTile(zst);
+
+function toBmp(w, h, bgra) {
+  const header = 14 + 108;
+  const buf = new ArrayBuffer(header + bgra.byteLength);
+  const v = new DataView(buf);
+  v.setUint16(0, 0x4d42, true); v.setUint32(2, buf.byteLength, true);
+  v.setUint32(10, header, true); v.setUint32(14, 108, true);
+  v.setInt32(18, w, true); v.setInt32(22, -h, true);
+  v.setUint16(26, 1, true); v.setUint16(28, 32, true); v.setUint32(30, 3, true);
+  v.setUint32(34, bgra.byteLength, true);
+  v.setUint32(54, 0x00ff0000, true); v.setUint32(58, 0x0000ff00, true);
+  v.setUint32(62, 0x000000ff, true); v.setUint32(66, 0xff000000, true);
+  v.setUint32(70, 0x73524742, true);
+  new Uint8Array(buf, header).set(bgra);
+  return buf;
+}
+function toBgra(w, h, idx, pal) {
+  const out = new Uint8Array(w * h * 4);
+  const v = new DataView(out.buffer);
+  const table = new Uint32Array(pal.length);
+  for (let i = 1; i < pal.length; i++) {
+    const [r, g, b] = pal[i];
+    table[i] = (255 << 24) | (r << 16) | (g << 8) | b;
+  }
+  for (let i = 0; i < idx.length; i++) if (idx[i]) v.setUint32(i * 4, table[idx[i]], true);
+  return out;
+}
+
+const bmp = toBmp(width, height, toBgra(width, height, index, PALETTE));
+
+// ======================================================================
+// 1. THE CRITICAL POINT
+// MapLibre does NOT read our Content-Type header: arrayBufferToImageBitmap
+// builds `new Blob([...], {type:'image/png'})` hard-coded. If createImageBitmap
+// trusted the declared type, serving BMP would be impossible.
+// ======================================================================
+say('<h2>1. Does a BMP announced as "image/png" decode anyway?</h2>');
+{
+  let ok = false, err = '';
+  try {
+    const b = new Blob([new Uint8Array(bmp)], { type: 'image/png' });   // LYING type, on purpose
+    const im = await createImageBitmap(b);
+    ok = im.width === width && im.height === height;
+    im.close();
+  } catch (e) { err = e.message; }
+  chk('Chrome sniffs the bytes and ignores the declared type', ok, err || `${width}x${height}`);
+  say('  <span class=dim>this is the assumption everything rests on: MapLibre hard-codes "image/png"</span>');
+
+  // and through a real Response, the way our fetch hook does
+  let ok2 = false;
+  try {
+    const res = new Response(bmp, { status: 200, headers: { 'Content-Type': 'image/bmp' } });
+    const buf = await res.arrayBuffer();
+    const im = await createImageBitmap(new Blob([new Uint8Array(buf)], { type: 'image/png' }));
+    ok2 = im.width === width; im.close();
+  } catch (e) { /* */ }
+  chk('same route as our hook: Response -> arrayBuffer -> lying Blob -> bitmap', ok2);
+}
+
+// ======================================================================
+// 2. Fidelity: does a transparent BMP render exactly like the PNG?
+// ======================================================================
+say('<h2>2. Pixel-for-pixel fidelity, transparency included</h2>');
+{
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext('2d').putImageData(toImageData(width, height, index), 0, 0);
+  const png = await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
+
+  const pixelsOf = async (buf) => {
+    const im = await createImageBitmap(new Blob([new Uint8Array(buf)], { type: 'image/png' }));
+    const [w, h] = [im.width, im.height];
+    const c = new OffscreenCanvas(w, h);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(im, 0, 0); im.close();
+    return g.getImageData(0, 0, w, h).data;
+  };
+  const a = await pixelsOf(bmp), b = await pixelsOf(png);
+  let diffs = 0, transparent = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    if (b[i + 3] === 0) transparent++;
+    const oa = a[i + 3] > 0, ob = b[i + 3] > 0;
+    if (oa !== ob || (oa && (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]))) diffs++;
+  }
+  chk('0 pixels differ out of 1,000,000', diffs === 0,
+      `${diffs} difference(s), ${(transparent / 10000).toFixed(1)} % transparent pixels`);
+}
+
+// ======================================================================
+// 3. The z10 path of DIRECT mode, as it runs in the page today
+// ======================================================================
+say('<h2>3. Direct mode: what a z10 tile costs on the main thread</h2>');
+{
+  // we build 4 fake z11 quadrants as PNGs, like the ones wplace returns
+  const q = [];
+  for (const n of ['11_1037_704', '11_1036_704', '11_1037_704', '11_1036_704']) {
+    const d = decodeTile(new Uint8Array(await (await fetch(`./tiles/${n}.zst`)).arrayBuffer()));
+    const c = new OffscreenCanvas(d.width, d.height);
+    c.getContext('2d').putImageData(toImageData(d.width, d.height, d.index), 0, 0);
+    q.push(await c.convertToBlob({ type: 'image/png' }));
+  }
+
+  // faithful reproduction of z10Direct() in content-main.js
+  const msCurrent = await timeIt(3, async () => {
+    const bmps = await Promise.all(q.map((b) => createImageBitmap(b)));
+    const t = new OffscreenCanvas(1000, 1000);
+    const g = t.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    bmps.forEach((b, i) => { g.drawImage(b, (i % 2) * 500, (i >> 1) * 500, 500, 500); b.close(); });
+    await t.convertToBlob({ type: 'image/png' });
+  });
+
+  // variant: same composition, but BMP output instead of PNG
+  const msBmp = await timeIt(3, async () => {
+    const bmps = await Promise.all(q.map((b) => createImageBitmap(b)));
+    const t = new OffscreenCanvas(1000, 1000);
+    const g = t.getContext('2d', { willReadFrequently: true });
+    g.imageSmoothingEnabled = false;
+    bmps.forEach((b, i) => { g.drawImage(b, (i % 2) * 500, (i >> 1) * 500, 500, 500); b.close(); });
+    const d = g.getImageData(0, 0, 1000, 1000).data;
+    // RGBA -> BGRA in place
+    for (let i = 0; i < d.length; i += 4) { const r = d[i]; d[i] = d[i + 2]; d[i + 2] = r; }
+    toBmp(1000, 1000, d);
+  });
+
+  say(`  composition + PNG encoding  <b class=fort>${msCurrent.toFixed(0)} ms</b> per tile ` +
+      `-> <b class=fort>${(msCurrent * 12 / 1000).toFixed(1)} s</b> per screen, on the MAIN THREAD`);
+  say(`  composition + BMP           <b class=ok>${msBmp.toFixed(0)} ms</b> per tile ` +
+      `-> ${(msBmp * 12 / 1000).toFixed(1)} s`);
+  say(`  <span class=dim>and in a pool of 4 workers, both figures are diemptyd by ~4 ` +
+      `AND leave the main thread</span>`);
+}
+
+// ======================================================================
+// 4. Level 11 served as-is: what does it cost?
+// ======================================================================
+say('<h2>4. Serving level 11 as-is (removing the quality jump)</h2>');
+{
+  const d = decodeTile(new Uint8Array(await (await fetch('./tiles/11_1037_704.zst')).arrayBuffer()));
+  const c = new OffscreenCanvas(d.width, d.height);
+  c.getContext('2d').putImageData(toImageData(d.width, d.height, d.index), 0, 0);
+  const png = await c.convertToBlob({ type: 'image/png' });
+  const msPassThrough = await timeIt(5, async () => {
+    const r = new Response(png, { headers: { 'Content-Type': 'image/png' } });
+    (await createImageBitmap(await r.blob())).close();
+  });
+  say(`  in Direct mode, a z11 tile is wplace's LIVE tile, served exactly as-is:`);
+  say(`  no decoding, no composition -- <b class=ok>${msPassThrough.toFixed(1)} ms</b> ` +
+      `(the single createImageBitmap MapLibre does anyway)`);
+  say(`  <span class=dim>and wplace will ask for exactly these tiles right after: shared browser cache</span>`);
+}
+
+window.__done = true;
+</script>

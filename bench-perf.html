@@ -1,0 +1,153 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Measurement bench -- cost of the pipeline</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px;margin:0}
+  h2{font-size:13px;margin:22px 0 8px;color:#7ee7a8}
+  table{border-collapse:collapse;margin:6px 0 14px}
+  th,td{padding:3px 12px 3px 0;text-align:right;white-space:nowrap}
+  th{color:#8b93a1;font-weight:400;border-bottom:1px solid #2a2e36}
+  td:first-child,th:first-child{text-align:left}
+  .fort{color:#ffb454} .ok{color:#7ee7a8} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+</style>
+<div id="log">measuring...</div>
+
+<script type="module">
+const CACHEBUST = '?v=' + Date.now();
+const el = document.getElementById('log');
+const L = [];
+const say = (s) => { L.push(s); el.innerHTML = L.join('\n'); };
+
+const { decodeTile, toImageData, PALETTE } = await import('./extension/decoder.js' + CACHEBUST);
+
+// Taken as-is from sw.js: we measure the REAL code, not a variant.
+function toBase64(buf) {
+  const u8 = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const fromBase64 = (b64, type) => fetch(`data:${type};base64,${b64}`).then((r) => r.arrayBuffer());
+
+const TILES = [
+  ['z5 Europe', '5_16_11'], ['z6 Europe', '6_32_22'], ['z6 USA', '6_18_24'],
+  ['z7 Europe', '7_64_44'], ['z7 Japan', '7_113_50'], ['z9 Europe', '9_259_176'],
+  ['z11 dense', '11_1037_704'],
+];
+
+const readTile = async (k) => new Uint8Array(await (await fetch(`./tiles/${k}.zst`)).arrayBuffer());
+const kb = (n) => (n / 1024).toFixed(0);
+// median over several passes: a single measurement is noisy from garbage collection
+const timeIt = async (n, f) => {
+  const t = [];
+  for (let i = 0; i < n; i++) { const a = performance.now(); await f(); t.push(performance.now() - a); }
+  t.sort((x, y) => x - y);
+  return t[t.length >> 1];
+};
+
+const rows = [];
+
+for (const [name, key] of TILES) {
+  const zst = await readTile(key);
+
+  // --- step 1: zstd decoding + deltas -> palette indexes
+  const msDec = await timeIt(5, () => { decodeTile(zst); });
+  const { width, height, index } = decodeTile(zst);
+
+  // --- step 2: indexes -> RGBA
+  const msRgba = await timeIt(5, () => { toImageData(width, height, index); });
+  const img = toImageData(width, height, index);
+
+  // --- step 3: PNG encoding (what enPng does in the worker)
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext('2d').putImageData(img, 0, 0);
+  const msPng = await timeIt(3, () => canvas.convertToBlob({ type: 'image/png' }));
+  const png = await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
+
+  // --- step 4: base64 of the PNG (the MV3 bridge)
+  const msB64 = await timeIt(5, () => { toBase64(png); });
+  const b64 = toBase64(png);
+
+  // --- step 5: crossing the bridge (JSON serialisation of the string)
+  const msJson = await timeIt(3, () => { JSON.parse(JSON.stringify({ pngB64: b64 })); });
+
+  // --- step 6: data: decoding, page side
+  const msData = await timeIt(3, () => fromBase64(b64, 'image/png'));
+
+  // --- step 7: PNG -> ImageBitmap (what MapLibre does)
+  const blobPng = new Blob([png], { type: 'image/png' });
+  const msBmp = await timeIt(3, async () => { (await createImageBitmap(blobPng)).close(); });
+
+  // --- variant: base64 of the RAW .zst (alternative pipeline)
+  const msB64zst = await timeIt(5, () => { toBase64(zst); });
+
+  rows.push({
+    name, zst: zst.byteLength, png: png.byteLength, b64: b64.length,
+    b64zst: toBase64(zst).length,
+    msDec, msRgba, msPng, msB64, msJson, msData, msBmp, msB64zst,
+    total: msDec + msRgba + msPng + msB64 + msJson + msData + msBmp,
+    totalAlt: msB64zst + msJson + msDec + msRgba,      // raw .zst + decoding in the page
+  });
+}
+
+// ----------------------------------------------------------------- report
+const t = (title, cols, body) =>
+  `<table><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>${body}</table>`;
+
+say('<h2>Size of the data</h2>' + t('', ['tile', '.zst', 'decoded PNG', 'base64 PNG', 'base64 .zst'],
+  rows.map((l) => `<tr><td>${l.name}</td><td>${kb(l.zst)} KB</td>` +
+    `<td class="${l.png > 600000 ? 'fort' : ''}">${kb(l.png)} KB</td>` +
+    `<td class="${l.b64 > 800000 ? 'fort' : ''}">${kb(l.b64)} KB</td>` +
+    `<td class="ok">${kb(l.b64zst)} KB</td></tr>`).join('')));
+
+say('<h2>CPU cost per step (ms, median)</h2>' + t('',
+  ['tile', 'zstd', '->RGBA', '->PNG', '->b64', 'bridge', 'data:', '->bitmap', '<b>TOTAL</b>'],
+  rows.map((l) => {
+    const c = (v, limit) => `<td class="${v > limit ? 'fort' : ''}">${v.toFixed(1)}</td>`;
+    return `<tr><td>${l.name}</td>${c(l.msDec, 20)}${c(l.msRgba, 10)}${c(l.msPng, 40)}` +
+           `${c(l.msB64, 10)}${c(l.msJson, 10)}${c(l.msData, 10)}${c(l.msBmp, 20)}` +
+           `<td><b>${l.total.toFixed(0)}</b></td></tr>`;
+  }).join('')));
+
+say('<h2>Current pipeline vs. "raw .zst, decoded in the page"</h2>' + t('',
+  ['tile', 'current', 'alternative', 'gain', 'bytes transferred'],
+  rows.map((l) => `<tr><td>${l.name}</td><td>${l.total.toFixed(0)} ms</td>` +
+    `<td class="ok">${l.totalAlt.toFixed(0)} ms</td>` +
+    `<td class="ok"><b>x${(l.total / l.totalAlt).toFixed(1)}</b></td>` +
+    `<td>${kb(l.b64)} -> <span class="ok">${kb(l.b64zst)} KB</span></td></tr>`).join('')));
+
+// ------------------------------------------- cost of one screen (12 tiles)
+const avg = (f) => rows.reduce((s, l) => s + f(l), 0) / rows.length;
+say('<h2>Extrapolation: one screen of 12 tiles</h2>');
+say(`  current pipeline     <b class="fort">${(avg((l) => l.total) * 12 / 1000).toFixed(2)} s</b> of CPU, ` +
+    `${(avg((l) => l.b64) * 12 / 1048576).toFixed(1)} MB across the bridge`);
+say(`  raw .zst + page      <b class="ok">${(avg((l) => l.totalAlt) * 12 / 1000).toFixed(2)} s</b>, ` +
+    `${(avg((l) => l.b64zst) * 12 / 1048576).toFixed(1)} MB`);
+say(`  <span class=dim>(4 in parallel in the worker -> diemptys the wall clock, not the CPU)</span>`);
+
+// ---------------------------------- cost of the rebuilt z10 (4 sources)
+{
+  const { composeBgra, toBmp } = await import('./extension/image.js' + CACHEBUST);
+  const q = ['11_1036_704', '11_1037_704', '11_1036_705', '11_1037_705'];
+  const available = [];
+  for (const [i, k] of q.entries()) {
+    try { available.push({ dx: i % 2, dy: i >> 1, ...decodeTile(await readTile(k)) }); } catch (e) { /* missing */ }
+  }
+  if (available.length) {
+    const msDec4 = await timeIt(3, async () => {
+      for (const k of q) { try { decodeTile(await readTile(k)); } catch (e) { /* missing */ } }
+    });
+    const msCompose = await timeIt(3, () => { toBmp(1000, 1000, composeBgra(available, PALETTE)); });
+    const bmp = toBmp(1000, 1000, composeBgra(available, PALETTE));
+    say('<h2>One rebuilt z10 tile (new path: BGRA + BMP)</h2>');
+    say(`  ${available.length} quadrants decoded     <b>${msDec4.toFixed(0)} ms</b>`);
+    say(`  composition + BMP       <b class=ok>${msCompose.toFixed(0)} ms</b>   (${kb(bmp.byteLength)} KB)`);
+    say(`  <span class=dim>-> ${(msDec4 + msCompose).toFixed(0)} ms per tile, but spread over ` +
+        `4 workers and OFF the main thread</span>`);
+  }
+}
+
+say('\n<span class=dim>measured on ' + navigator.hardwareConcurrency + ' cores</span>');
+window.__done = true;
+</script>

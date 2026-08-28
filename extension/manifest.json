@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extensionName__",
+  "version": "1.0.0",
+  "description": "__MSG_extensionDescription__",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://wplace.live/*",
+    "https://wplace.eralyon.net/*",
+    "https://backend.wplace.live/*"
+  ],
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://wplace.live/*"
+      ],
+      "js": [
+        "language.js",
+        "content-iso.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": [
+        "https://wplace.live/*"
+      ],
+      "js": [
+        "content-main.js",
+        "ui.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "pyramide.js",
+        "decoder.js",
+        "image.js",
+        "worker.js",
+        "vendor/fzstd.js",
+        "vendor/zstddec.js"
+      ],
+      "matches": [
+        "https://wplace.live/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "__MSG_extensionName__",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "default_locale": "en"
+}

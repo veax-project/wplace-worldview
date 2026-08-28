@@ -1,0 +1,458 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- welcome bubble</title>
+
+<!--
+  This bench loads wplace's REAL CSS (proof/wplace.css, fetched with
+  tools/fetch-css.py). It is the only way to check that the bubble really is
+  in their visual style: Tailwind only generates the utilities actually used on
+  the site, so a plausible-looking class can be entirely absent from their
+  stylesheet -- and an in-house imitation would hide exactly that flaw.
+-->
+<link rel="stylesheet" href="./proof/wplace.css">
+<link rel="stylesheet" href="./proof/wplace2.css">
+
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { background: #6b7d8f; font: 13px/1.6 ui-monospace, monospace; }
+  #log { position: fixed; inset: 0 auto 0 0; width: 640px; overflow: auto;
+         white-space: pre-wrap; background: #14161a; color: #dfe2e8; padding: 20px;
+         z-index: 5; }
+  .ok { color: #7ee7a8 } .ko { color: #ff6b8a } .dim { opacity: .55 }
+  /* the fake map, to judge how readable the bubble is on top of it */
+  #map { position: fixed; inset: 0; background:
+      repeating-conic-gradient(#7f9 0 25%, #cfe 0 50%) 0 0/26px 26px; opacity: .5; }
+</style>
+
+<div id="map"></div>
+<div id="log">running...</div>
+
+<!-- reproduction of wplace's right-hand vertical bar -->
+<div class="fixed top-3 right-3 z-30">
+  <div class="flex flex-col items-center gap-3" id="bar">
+    <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Store">S</button>
+    <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Leaderboard">L</button>
+    <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Alliance">A</button>
+    <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Overlays">O</button>
+  </div>
+</div>
+
+<script type="module">
+// ES modules are cached independently of the page: without this parameter we
+// read the old code back after a change
+const CACHEBUST = '?v=' + Date.now();
+const L = [], el = document.getElementById('log');
+const say = (s) => { L.push(s); el.innerHTML = L.join('\n'); };
+const chk = (n, c, d) => say(`${c ? '<span class=ok>[OK]  </span>' : '<span class=ko>[FAIL]</span>'} ${n}${d ? '  <span class=dim>-- ' + d + '</span>' : ''}`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------- fake ISOLATED bridge
+const TEXTS = {
+  panelTitle: 'World view', panelIntro: 'Shows the drawings even when zoomed out.',
+  enable: 'Enable', quality: 'Quality',
+  qualityLight: 'Light', qualitySharp: 'Sharp', qualityLive: 'Live',
+  helpLight: 'Least data.', helpSharp: 'From the archive.', helpLive: 'Live from wplace.',
+  opacity: 'Opacity', clearCache: 'Clear cache', clearing: 'Clearing…',
+  close: 'close', archiveUnreachable: 'Archive unreachable.',
+  freshnessLive: 'Close-up: <b>live</b>', freshnessArchive: 'Snapshot <b>{DATE}</b>{BEHIND}',
+  behind: ' — <b>{H} h</b> behind', cacheState: 'Cache: <b>{N}</b> / {MAX} tiles',
+  welcomeTitle: 'WorldView is installed',
+  welcomeText: "Its settings live right here, in wplace's own toolbar. Click the globe to change quality or opacity.",
+  welcomeGotIt: 'Got it',
+  showTitle: 'Right here',
+  showText: "This is WorldView's button, tucked into wplace's own toolbar.",
+  clearTitle: 'Clear the cache?',
+  clearText: 'Stored tiles will be deleted. They come back on their own as you browse.',
+  clearConfirm: 'Clear', cancel: 'Cancel',
+};
+
+// the reminder counter, as content-iso.js keeps it in storage.local
+const store = { active: true, opacity: 1, minZoom: 0, quality: 'net' };
+let welcome = 3;
+let cacheClears = 0;
+const acks = [];                      // log of the welcomeSeen calls
+
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (e.source !== window || d?.type !== 'wv:action') return;
+  const reply = (valeur) => window.postMessage({ type: 'wv:return', id: d.id, valeur }, '*');
+  if (d.action === 'settings') return reply({ ...store, texts: TEXTS });
+  if (d.action === 'set') { Object.assign(store, d.charge); return reply({ ok: true }); }
+  if (d.action === 'stats') return reply({ ok: true, entries: 12, max: 500, quality: store.quality,
+                                          version: { date: '2026-08-22T01' } });
+  if (d.action === 'reserveState') return reply({ ok: true, etat: null });
+  if (d.action === 'clear') { cacheClears++; return reply({ ok: true }); }
+  if (d.action === 'welcome') return reply({ remaining: welcome });
+  if (d.action === 'welcomeSeen') {
+    acks.push(!!(d.charge && d.charge.permanent));
+    // same rule as in content-iso.js
+    if (d.charge && d.charge.permanent) welcome = 0;
+    else welcome = welcome > 1 ? welcome - 1 : 0;
+    return reply({ ok: true });
+  }
+  reply(null);
+});
+
+window.__worldview = { state: store, map: null, threshold: () => 10.6, maxLayer: () => 10.95 };
+
+// A background tab composes no frame: the bubble would show there frozen on the
+// first frame of its animation. So the extension waits for the tab to come back.
+// We drive that state here to exercise BOTH branches -- all the more so as this
+// bench itself runs in a tab that is not displayed.
+let visible = false;
+Object.defineProperty(document, 'visibilityState', {
+  configurable: true, get: () => (visible ? 'visible' : 'hidden'),
+});
+
+// wplace opens windows of its own on load (release notes): we reproduce the
+// case, the bubble must above all not sit on top of them
+const blocker = document.createElement('dialog');
+blocker.className = 'modal';
+blocker.innerHTML = '<div class="modal-box">wplace release notes</div>';
+document.body.appendChild(blocker);
+blocker.showModal();
+
+await import('./extension/ui.js' + CACHEBUST);
+await sleep(200);
+
+const button = () => document.getElementById('wv-bouton');
+const bubble = () => document.getElementById('wv-bulle');
+
+// ------------------------------------------------------------------- 1. waiting
+chk('button laid in the bar', !!button());
+await sleep(1800);
+chk('the bubble WAITS for the wplace window to be closed', !bubble(),
+    'dialog[open] present, we do not sit on top of it');
+
+blocker.close();
+await sleep(700);
+chk('background tab: the bubble still waits', !bubble(),
+    'a hidden tab composes no frame, it would show frozen');
+
+visible = true;
+await sleep(700);
+chk('the bubble appears once the coast is clear', !!bubble());
+
+// ------------------------------------------------- 2. content and visual style
+{
+  const b = bubble();
+  chk('texts from _locales, nothing hardcoded',
+      b.textContent.includes(TEXTS.welcomeTitle) && b.textContent.includes(TEXTS.welcomeGotIt));
+  // The needles are the built-in French fallbacks this bubble must never show.
+  // Their accents are built with fromCharCode: the guard keeps working without
+  // putting a single non-ASCII byte back into the source.
+  const E = String.fromCharCode(233), Q = String.fromCharCode(8217);
+  const FRENCH = new RegExp(['install' + E + 'e', 'J' + Q + 'ai compris',
+                             "J'ai compris", 'r' + E + 'glages'].join('|'));
+  chk('no hardcoded French string', !FRENCH.test(b.textContent));
+  chk('reuses the site classes',
+      ['bg-base-100', 'border-base-300', 'rounded-xl', 'shadow-xl'].every((c) => b.classList.contains(c)),
+      b.className);
+
+  const st = getComputedStyle(b);
+  // if a class did not exist in their CSS, these values would be the defaults
+  chk('the background really comes from their theme (bg-base-100 applied)',
+      st.backgroundColor !== 'rgba(0, 0, 0, 0)' && st.backgroundColor !== 'transparent',
+      st.backgroundColor);
+  chk('radius = their rounded-xl (0.75 rem), not the 2 rem of daisyUI',
+      st.borderRadius === '12px', st.borderRadius);
+  chk('1 px visible border', st.borderTopWidth === '1px', st.borderTopWidth);
+  chk('shadow applied', st.boxShadow !== 'none', st.boxShadow.slice(0, 46) + '...');
+  chk('the arrow is not clipped (overflow visible)', st.overflow === 'visible', st.overflow);
+
+  const f = b.querySelector('.wv-fleche');
+  chk('arrow rotated 45 deg by our own rule (rotate-45 absent from wplace CSS)',
+      getComputedStyle(f).transform !== 'none', getComputedStyle(f).transform);
+
+  const ok = b.querySelector('#wv-bulle-ok');
+  chk('acknowledge button in the site format',
+      ok.classList.contains('btn') && ok.classList.contains('btn-primary'));
+  chk('the acknowledge button really is styled by their CSS',
+      getComputedStyle(ok).backgroundColor !== 'rgba(0, 0, 0, 0)',
+      getComputedStyle(ok).backgroundColor);
+}
+
+// ------------------------------------------------------ 3. anchoring to the button
+{
+  // The entry animation distorts the rectangle (scale .96 + offset). We check
+  // that it exists, then we neutralise it: waiting for it would block forever if
+  // the tab is not in the foreground -- a hidden tab composes no frame.
+  chk('the bubble does have an entry animation',
+      bubble().getAnimations().some((a) => a.animationName === 'wv-entree'));
+  bubble().style.animation = 'none';
+  await sleep(60);
+  const rb = button().getBoundingClientRect();
+  const rl = bubble().getBoundingClientRect();
+  chk('placed TO THE LEFT of the button', rl.right <= rb.left + 1,
+      `bubble ends at ${Math.round(rl.right)}, button starts at ${Math.round(rb.left)}`);
+  chk('vertically centred on the button',
+      Math.abs((rl.top + rl.height / 2) - (rb.top + rb.height / 2)) < 3,
+      `gap ${Math.round(Math.abs((rl.top + rl.height / 2) - (rb.top + rb.height / 2)))} px`);
+  chk('entirely within the screen',
+      rl.left >= 0 && rl.top >= 0 && rl.right <= innerWidth && rl.bottom <= innerHeight);
+  chk('the button blinks', button().classList.contains('wv-signale'));
+  chk('it is in the top layer (popover)',
+      bubble().matches(':popover-open') || getComputedStyle(bubble()).zIndex === '2147483000',
+      bubble().hasAttribute('popover') ? 'popover=manual' : 'fallback z-index');
+}
+
+// --------------------------------------- 4. it follows the button when it moves
+{
+  const before = bubble().getBoundingClientRect().top;
+  const added = document.createElement('button');
+  added.className = 'btn btn-lg btn-square sm:btn-xl shadow-md';
+  added.title = 'New wplace button';
+  added.textContent = 'N';
+  document.getElementById('bar').appendChild(added);
+  await sleep(1400);                                // two observation slices
+  const after = bubble().getBoundingClientRect();
+  const rb = button().getBoundingClientRect();
+  const gap = Math.abs((after.top + after.height / 2) - (rb.top + rb.height / 2));
+  chk('wplace adds a button: the bubble follows ours',
+      gap < 3 && after.top !== before,
+      `bubble ${Math.round(before)} -> ${Math.round(after.top)} px, ` +
+      `button centre ${Math.round(rb.top + rb.height / 2)}, ` +
+      `bubble centre ${Math.round(after.top + after.height / 2)}, gap ${Math.round(gap)} px`);
+  added.remove();
+  await sleep(900);
+}
+
+// ------------------------------------------------- 5. one bubble only, never two
+{
+  const n0 = document.querySelectorAll('#wv-bulle').length;
+  button().remove();                                 // Svelte re-render
+  await sleep(900);
+  chk('a single bubble even after a re-render',
+      document.querySelectorAll('#wv-bulle').length === 1 && n0 === 1);
+}
+
+say('\n<span class=dim>-- visual capture taken here --</span>\n');
+window.__readyForCapture = true;
+await sleep(1200);
+
+// -------------------------------------------------- 6. narrow screen: the switch
+{
+  // we simulate narrowness by pushing the button to the left: placeBubble()
+  // decides on the room available, not on innerWidth
+  const bar = document.querySelector('.fixed.top-3.right-3');
+  bar.style.right = 'auto';
+  bar.style.left = '4px';
+  dispatchEvent(new Event('resize'));
+  await sleep(120);
+  const rb = button().getBoundingClientRect();
+  const rl = bubble().getBoundingClientRect();
+  chk('no room on the left: the bubble goes UNDER the button', rl.top >= rb.bottom - 1,
+      `bubble at ${Math.round(rl.top)}, button ends at ${Math.round(rb.bottom)}`);
+  chk('still entirely within the screen',
+      rl.left >= 0 && rl.right <= innerWidth && rl.bottom <= innerHeight,
+      `x ${Math.round(rl.left)}-${Math.round(rl.right)} / ${innerWidth}`);
+  const f = bubble().querySelector('.wv-fleche');
+  chk('the arrow has flipped upwards',
+      getComputedStyle(f).borderTopWidth === '1px' && getComputedStyle(f).borderRightWidth === '0px');
+  bar.style.right = '0.75rem';
+  bar.style.left = 'auto';
+  dispatchEvent(new Event('resize'));
+  await sleep(120);
+}
+
+// ------------------------------ 7. it RESISTS interactions with the map
+// This is the important point: moving around the map is everyone's first
+// gesture, and a bubble that leaves on the first click is never read.
+{
+  const map = document.getElementById('map');
+  for (const ev of [new PointerEvent('pointerdown', { bubbles: true }),
+                    new MouseEvent('mousedown', { bubbles: true }),
+                    new MouseEvent('click', { bubbles: true }),
+                    new WheelEvent('wheel', { bubbles: true, deltaY: -120 })]) {
+    map.dispatchEvent(ev);
+  }
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  await sleep(200);
+  chk('clicking and zooming on the map does NOT close the bubble', !!bubble(),
+      'pointerdown, mousedown, click, wheel');
+  chk('no spurious acknowledgement', acks.length === 0);
+  chk('the button still blinks', button().classList.contains('wv-signale'));
+}
+
+// -------------------------- 8. clicking the toolbar button DOES acknowledge
+{
+  button().click();
+  await sleep(200);
+  chk('clicking the button closes the bubble', !bubble());
+  chk('and acknowledges it for good: it has been found',
+      acks.length === 1 && acks[0] === true, `welcomeSeen(permanent=${acks[0]})`);
+  chk('the blinking stops', !button().classList.contains('wv-signale'));
+  chk('the counter is reset to zero', welcome === 0, `remaining ${welcome}`);
+  document.getElementById('wv-panneau')?.close();     // the click opened the settings
+  await sleep(120);
+}
+
+// ------------------------------------------------ 9. Escape does not acknowledge
+{
+  welcome = 2; acks.length = 0;
+  // we start a full cycle again by reloading the module with a fresh cache-bust
+  document.getElementById('wv-bouton')?.remove();
+  document.getElementById('wv-style')?.remove();
+  await import('./extension/ui.js?v=' + (Date.now() + 1));
+  await sleep(2400);
+  chk('the bubble comes back while the counter is not exhausted', !!bubble(), `remaining ${welcome}`);
+  if (bubble()) {
+    dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await sleep(150);
+    chk('Escape closes it (keyboard way out)', !bubble());
+    chk('but Escape does not acknowledge: it will come back', acks.length === 1 && acks[0] === false);
+    chk('the counter was only decremented', welcome === 1, `remaining ${welcome}`);
+  }
+}
+
+// -------------------------------------------- 10. acknowledgement by "Got it"
+{
+  welcome = 1; acks.length = 0;
+  document.getElementById('wv-bouton')?.remove();
+  document.getElementById('wv-style')?.remove();
+  await import('./extension/ui.js?v=' + (Date.now() + 2));
+  await sleep(2400);
+  if (!bubble()) { chk('bubble shown for the acknowledgement test', false); }
+  else {
+    bubble().querySelector('#wv-bulle-ok').click();
+    await sleep(150);
+    chk('"Got it" closes the bubble', !bubble());
+    chk('"Got it" acknowledges for good', acks.length === 1 && acks[0] === true);
+    chk('the counter is reset to zero: never again', welcome === 0);
+  }
+}
+
+// ------------------------------------- 11. counter exhausted: nothing at all
+{
+  welcome = 0; acks.length = 0;
+  document.getElementById('wv-bouton')?.remove();
+  document.getElementById('wv-style')?.remove();
+  await import('./extension/ui.js?v=' + (Date.now() + 3));
+  await sleep(2400);
+  chk('counter at zero: no bubble', !bubble());
+  chk('no spurious welcomeSeen call', acks.length === 0);
+}
+
+// ----------------------------------- 12. no listener is left after closing
+{
+  // if a resize listener survived, it would run placeBubble() on a bubble that
+  // is gone; we check that nothing throws and nothing is recreated
+  let errors = 0;
+  const guard = () => { errors++; };
+  addEventListener('error', guard);
+  for (let i = 0; i < 5; i++) dispatchEvent(new Event('resize'));
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(200);
+  removeEventListener('error', guard);
+  chk('no error after closing (listeners properly removed)', errors === 0);
+  chk('no duplicated welcomeSeen call', acks.length === 0, `${acks.length} call(s)`);
+}
+
+// ------------------------- 13. confirmation before clearing the cache
+{
+  document.getElementById('wv-bouton').click();          // opens the settings
+  await sleep(200);
+  const p = document.getElementById('wv-panneau');
+  const clearBtn = p.querySelector('#wv-emptyr');
+
+  chk('the "clear" button is full width',
+      clearBtn.classList.contains('w-full') && !clearBtn.classList.contains('btn-block'),
+      'btn-block is ABSENT from wplace CSS: it would do nothing');
+  chk('and it really is stretched by their CSS',
+      clearBtn.getBoundingClientRect().width > 200,
+      `${Math.round(clearBtn.getBoundingClientRect().width)} px`);
+
+  clearBtn.click();
+  await sleep(200);
+  const conf = document.getElementById('wv-confirme');
+  chk('clicking "clear" opens a confirmation', conf?.open === true);
+  chk('nothing has been cleared yet', cacheClears === 0, `${cacheClears} clear(s)`);
+  chk('it is a modal in the site format',
+      conf.className === 'modal' && !!conf.querySelector('.modal-box.rounded-xl'));
+  chk('the dimmed backdrop is present', !!conf.querySelector('.modal-backdrop'));
+  chk('it cancels on an outside click', conf.getAttribute('closedby') === 'any');
+  chk('the destructive button is red (btn-error)',
+      conf.querySelector('#wv-confirme-oui').classList.contains('btn-error'));
+  chk('focus starts on "Cancel"',
+      document.activeElement === conf.querySelector('#wv-confirme-non'),
+      document.activeElement?.id);
+  chk('texts translated, nothing hardcoded',
+      conf.textContent.includes(TEXTS.clearTitle) &&
+      conf.textContent.includes(TEXTS.cancel) &&
+      conf.textContent.includes(TEXTS.clearConfirm));
+
+  // --- cancelling must do nothing
+  conf.querySelector('#wv-confirme-non').click();
+  await sleep(200);
+  chk('"Cancel" closes without clearing anything', !conf.open && cacheClears === 0);
+  chk('the settings are still open behind', p.open === true);
+
+  // --- confirming really clears
+  clearBtn.click();
+  await sleep(200);
+  document.getElementById('wv-confirme').querySelector('#wv-confirme-oui').click();
+  await sleep(300);
+  chk('"Clear" closes the confirmation and clears',
+      !document.getElementById('wv-confirme').open && cacheClears === 1,
+      `${cacheClears} clear(s)`);
+  chk('the button gets its label back', clearBtn.textContent === TEXTS.clearCache,
+      clearBtn.textContent);
+  chk('and becomes clickable again', clearBtn.disabled === false);
+}
+
+// ---------------------------------------------------------------------------
+// 6. "Show me the button", asked for from the extension popup
+// ---------------------------------------------------------------------------
+{
+  // the coast must be clear: the settings panel is still open
+  for (const d of document.querySelectorAll('dialog[open]')) d.close();
+  await sleep(120);
+
+  const acksBefore = acks.length;
+  chk('the welcome counter really is exhausted before this test', welcome === 0,
+      `welcome = ${welcome}`);
+  chk('no bubble on screen any more', !bubble());
+
+  // this is exactly what content-iso.js posts when it gets the popup message
+  window.postMessage({ type: 'wv:show-button' }, '*');
+  await sleep(700);
+
+  const b = bubble();
+  chk('the bubble comes back on request, even with the welcome exhausted', !!b);
+  chk('it says "right here", not "it is installed"',
+      !!b && b.textContent.includes(TEXTS.showTitle)
+         && !b.textContent.includes(TEXTS.welcomeTitle),
+      b && b.querySelector('.font-bold')?.textContent);
+  chk('the button blinks', button()?.classList.contains('wv-signale'));
+
+  // anchoring: same rule as the welcome bubble
+  if (b) b.style.animation = 'none';
+  await sleep(60);
+  if (b) {
+    const rb = b.getBoundingClientRect(), rp = button().getBoundingClientRect();
+    chk('anchored to the button', Math.abs((rb.top + rb.height / 2) - (rp.top + rp.height / 2)) < 3,
+        `gap ${Math.round(Math.abs((rb.top + rb.height / 2) - (rp.top + rp.height / 2)))} px`);
+  }
+
+  // a second request must not stack a second bubble
+  window.postMessage({ type: 'wv:show-button' }, '*');
+  await sleep(300);
+  chk('a second request does not double the bubble',
+      document.querySelectorAll('#wv-bulle').length === 1,
+      `${document.querySelectorAll('#wv-bulle').length} bubble(s)`);
+
+  // and above all: it does not consume the welcome counter
+  document.getElementById('wv-bulle-ok').click();
+  await sleep(250);
+  chk('"Got it" closes it', !bubble());
+  chk('a REQUESTED bubble does not acknowledge the welcome', acks.length === acksBefore,
+      `${acks.length - acksBefore} spurious acknowledgement(s)`);
+  chk('the halo is removed with it', !button()?.classList.contains('wv-signale'));
+}
+
+say('\n' + (L.some((x) => x.includes('FAIL'))
+  ? '<span class=ko><b>SOME TESTS FAIL</b></span>'
+  : '<span class=ok><b>ALL TESTS PASS</b></span>'));
+window.__done = true;
+</script>

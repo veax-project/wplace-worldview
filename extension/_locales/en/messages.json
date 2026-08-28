@@ -1,0 +1,167 @@
+{
+  "extensionName": {
+    "message": "Wplace WorldView"
+  },
+  "extensionDescription": {
+    "message": "See wplace.live drawings even when zoomed out, where the site shows nothing."
+  },
+  "panelTitle": {
+    "message": "World view"
+  },
+  "panelIntro": {
+    "message": "Shows the drawings even when zoomed out, where wplace stops displaying them."
+  },
+  "enable": {
+    "message": "Enable"
+  },
+  "quality": {
+    "message": "Quality"
+  },
+  "qualityLight": {
+    "message": "Light"
+  },
+  "qualitySharp": {
+    "message": "Sharp"
+  },
+  "qualityLive": {
+    "message": "Live"
+  },
+  "helpLight": {
+    "message": "Least data. Slightly blurry between zoom 9.5 and 10.6."
+  },
+  "helpSharp": {
+    "message": "Rebuilds the missing zoom level from the archive. Data is 1 to 3 days old."
+  },
+  "helpLive": {
+    "message": "Rebuilds from wplace directly: up to the second, same weight."
+  },
+  "opacity": {
+    "message": "Opacity"
+  },
+  "clearCache": {
+    "message": "Clear cache"
+  },
+  "clearing": {
+    "message": "Clearing…"
+  },
+  "close": {
+    "message": "close"
+  },
+  "archiveUnreachable": {
+    "message": "Archive unreachable."
+  },
+  "freshnessLive": {
+    "message": "Close-up: <b>live</b><br>Wide view: <b>{DATE}</b>"
+  },
+  "freshnessArchive": {
+    "message": "Snapshot from <b>{DATE}</b>{BEHIND}"
+  },
+  "behind": {
+    "message": " — <b>{H} h</b> behind"
+  },
+  "cacheState": {
+    "message": "Cache: <b>{N}</b> / {MAX} tiles"
+  },
+  "settingsInMap": {
+    "message": "The settings live in the map, inside wplace’s own toolbar."
+  },
+  "welcomeTitle": {
+    "message": "WorldView is installed"
+  },
+  "welcomeText": {
+    "message": "Its settings live right here, in wplace's own toolbar. Click the globe to change quality or opacity."
+  },
+  "welcomeGotIt": {
+    "message": "Got it"
+  },
+  "showTitle": {
+    "message": "Right here"
+  },
+  "showText": {
+    "message": "This is WorldView’s button, tucked into wplace’s own toolbar. Click it for quality, opacity and the map download."
+  },
+  "clearTitle": {
+    "message": "Clear the cache?"
+  },
+  "clearText": {
+    "message": "Stored tiles will be deleted. They come back on their own as you browse, so nothing is lost — the map will just be slower for a moment."
+  },
+  "clearConfirm": {
+    "message": "Clear"
+  },
+  "cancel": {
+    "message": "Cancel"
+  },
+  "reserveTitle": {
+    "message": "Download the world"
+  },
+  "reserveText": {
+    "message": "Downloads the wide zoom levels once and keeps them. After that, zooming out is instant. You can close this window and keep playing — it continues in the background, and the button shows how far along it is."
+  },
+  "reserveWorld": {
+    "message": "World · 175 MB"
+  },
+  "reserveDetailed": {
+    "message": "Detailed · 510 MB"
+  },
+  "reserveProgress": {
+    "message": "{DONE} / {TOTAL} tiles · {MB} MB"
+  },
+  "reserveStop": {
+    "message": "Stop"
+  },
+  "reserveReady": {
+    "message": "Ready · {N} tiles stored"
+  },
+  "reserveDelete": {
+    "message": "Delete"
+  },
+  "reserveCourtesy": {
+    "message": "The archive is served through a CDN with a 4-hour cache, so most of this never reaches the origin machine."
+  },
+  "reserveRemaining": {
+    "message": " · ~{MIN} min left"
+  },
+  "reserveClearTitle": {
+    "message": "Delete the downloaded map?"
+  },
+  "reserveClearText": {
+    "message": "The stored levels will be removed. Zooming out will load from the network again, and downloading them back takes several minutes."
+  },
+  "reserveDoneTitle": {
+    "message": "Map downloaded"
+  },
+  "reserveDoneText": {
+    "message": "{N} tiles stored. Zooming out is instant from now on — enjoy."
+  },
+  "popupHelp": {
+    "message": "How it works"
+  },
+  "popupBug": {
+    "message": "Report a problem"
+  },
+  "popupEmail": {
+    "message": "Write to me"
+  },
+  "popupPrivacy": {
+    "message": "Privacy policy"
+  },
+  "popupShow": {
+    "message": "Show me the button"
+  },
+  "popupUnofficial": {
+    "message": "Unofficial extension. Not affiliated with wplace.live."
+  },
+  "reserveDated": {
+    "message": "Wide view: snapshot of {DATE}"
+  },
+  "reserveUpdate": {
+    "message": "Update"
+  },
+  "safetyNet": {
+    "message": "Safety net"
+  },
+  "safetyNetHelp": {
+    "message": "Kicks in on its own when wplace’s own tiles stop loading: our layer slips underneath theirs and shows the archived drawings instead of an empty map, then steps back once wplace recovers. Costs nothing while all is well. Turn this on to keep it deployed at all times."
+  }
+}

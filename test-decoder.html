@@ -1,0 +1,124 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- standalone decoder</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+</style>
+<div id="log">running...</div>
+
+<script type="module">
+// ES modules are cached independently of the page: without this parameter we
+// read the old code back after a change
+const CACHEBUST = '?v=' + Date.now();
+const L=[], el=document.getElementById('log');
+const say=s=>{L.push(s);el.innerHTML=L.join('\n')};
+const chk=(n,c,d)=>say(`${c?'<span class=ok>[OK]  </span>':'<span class=ko>[FAIL]</span>'} ${n}${d?'  <span class=dim>-- '+d+'</span>':''}`);
+
+const { decodeTile, toImageData, PALETTE } = await import('./extension/decoder.js' + CACHEBUST);
+chk('standalone decoder loaded (fzstd MIT, no third-party code)', typeof decodeTile === 'function');
+chk('64-colour palette', PALETTE.length === 64, `index 0 = ${PALETTE[0]} (transparent)`);
+
+// reference: the original WASM decoder
+const ref = await import('./vendor/wimage_wasm.js' + CACHEBUST);
+await ref.default(); ref.init_panic_hook?.();
+const VERSION = 14353;
+
+const TILES = [
+  ['Europe z6', '6_32_22'], ['Europe z5', '5_16_11'], ['Europe z7', '7_64_44'],
+  ['USA z6', '6_18_24'],    ['Japan z7', '7_113_50'], ['z11 dense', '11_1037_704'],
+];
+
+let identical = 0, msOurs = 0, msTheirs = 0;
+
+for (const [name, key] of TILES) {
+  const raw = new Uint8Array(await (await fetch(`./tiles/${key}.zst`)).arrayBuffer());
+
+  // --- our decoder ---
+  const t0 = performance.now();
+  const { width, height, index } = decodeTile(raw);
+  const ours = toImageData(width, height, index).data;
+  msOurs += performance.now() - t0;
+
+  // --- the original decoder ---
+  const t1 = performance.now();
+  const png = ref.get_image(VERSION, raw);
+  const bmp = await createImageBitmap(new Blob([new Uint8Array(png)], { type: 'image/png' }));
+  const c = new OffscreenCanvas(bmp.width, bmp.height);
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0);
+  const theirs = g.getImageData(0, 0, bmp.width, bmp.height).data;
+  msTheirs += performance.now() - t1;
+
+  // --- strict comparison, pixel by pixel ---
+  let diffs = 0, first = null;
+  if (ours.length !== theirs.length) {
+    diffs = -1;
+  } else {
+    for (let i = 0; i < ours.length; i += 4) {
+      const aOpaque = ours[i + 3] > 0, bOpaque = theirs[i + 3] > 0;
+      const same = aOpaque === bOpaque &&
+        (!aOpaque || (ours[i] === theirs[i] && ours[i+1] === theirs[i+1] && ours[i+2] === theirs[i+2]));
+      if (!same) { diffs++; if (!first) first = `px ${i/4}: ours ${[...ours.slice(i,i+4)]} / theirs ${[...theirs.slice(i,i+4)]}`; }
+    }
+  }
+  if (!diffs) identical++;
+  chk(`${name} -- identical to the original decoder`, diffs === 0,
+      diffs === 0 ? `${width}x${height}, ${(index.filter ? 0 : 0)}${(ours.length/4).toLocaleString('en')} px compared`
+                  : `${diffs} differing pixel(s) - ${first || ''}`);
+}
+
+say('');
+chk(`${identical}/${TILES.length} tiles strictly identical`, identical === TILES.length);
+say(`<span class=dim>  speed: ours ${(msOurs/TILES.length).toFixed(0)} ms/tile - original ${(msTheirs/TILES.length).toFixed(0)} ms/tile</span>`);
+
+// --- the WebAssembly path must be equivalent as well ------------------------
+// bench-zstd.html shows that zstddec returns the same bytes as fzstd. But what
+// really counts is that the PIXELS match the ones from the original decoder.
+// So we plug the decompressor back in and run the comparison again.
+{
+  const { setDecompressor } = await import('./extension/decoder.js' + CACHEBUST);
+  const { ZSTDDecoder } = await import('./extension/vendor/zstddec.js' + CACHEBUST);
+  const LIMIT = 4 << 20;   // the archive streams do not carry their own size
+  const wasm = new ZSTDDecoder();
+  await wasm.init();
+  setDecompressor((f) => wasm.decode(f, LIMIT));
+
+  let identicalW = 0;
+  let msW = 0;
+  for (const [name, key] of TILES) {
+    const rawW = new Uint8Array(await (await fetch(`./tiles/${key}.zst`)).arrayBuffer());
+    const t = performance.now();
+    const { width, height, index } = decodeTile(rawW);
+    const ours = toImageData(width, height, index).data;
+    msW += performance.now() - t;
+
+    const png = ref.get_image(VERSION, rawW);
+    const bmp = await createImageBitmap(new Blob([new Uint8Array(png)], { type: 'image/png' }));
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0);
+    const theirs = g.getImageData(0, 0, bmp.width, bmp.height).data;
+
+    let diffs = 0;
+    for (let i = 0; i < ours.length; i += 4) {
+      const a = ours[i + 3] > 0, b = theirs[i + 3] > 0;
+      if (a !== b || (a && (ours[i] !== theirs[i] || ours[i + 1] !== theirs[i + 1] || ours[i + 2] !== theirs[i + 2]))) {
+        diffs++;
+        break;
+      }
+    }
+    if (!diffs) identicalW++;
+  }
+  chk(`${identicalW}/${TILES.length} tiles identical WITH the WebAssembly zstd`,
+      identicalW === TILES.length,
+      `${(msW / TILES.length).toFixed(0)} ms/tile against ${(msOurs / TILES.length).toFixed(0)} in JavaScript`);
+
+  setDecompressor(null);   // hand the module back its own state
+}
+
+say('\n' + (L.some(x => x.includes('FAIL'))
+  ? '<span class=ko><b>SOME TESTS FAIL</b></span>'
+  : '<span class=ok><b>ALL TESTS PASS -- the in-house decoder is equivalent</b></span>'));
+</script>

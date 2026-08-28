@@ -1,0 +1,447 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- WorldView extension</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+  canvas{image-rendering:pixelated;border:1px solid #2e3138;border-radius:6px;
+    width:260px;height:260px;background:#fff;margin-top:14px}
+</style>
+<div id="log">running...</div>
+<div id="view"></div>
+
+<script type="module">
+// ES modules are cached independently of the page: without this parameter we
+// read the old code back after a change
+const CACHEBUST = '?v=' + Date.now();
+const L = [], el = document.getElementById('log');
+const say = s => { L.push(s); el.innerHTML = L.join('\n'); };
+const chk = (n, c, d) => say(`${c ? '<span class=ok>[OK]  </span>' : '<span class=ko>[FAIL]</span>'} ${n}${d ? '  <span class=dim>-- ' + d + '</span>' : ''}`);
+
+// ---------------------------------------------------------------------------
+// 1. Fake ISOLATED bridge: replays content-iso.js's protocol exactly, but
+//    serves the tiles from ./tiles/ instead of the service worker.
+// ---------------------------------------------------------------------------
+// The service worker no longer returns a decoded PNG: it hands back the RAW
+// .zst bytes, and it is the page's worker pool that decodes. So the fake bridge
+// serves the .zst as-is, exactly like the real one.
+const AVAILABLE = new Set(['5_16_11','6_32_22','7_64_44','5_9_12','6_18_24','7_37_48',
+                           '5_28_12','6_56_25','7_113_50','9_259_176',
+                           '11_1036_704','11_1037_704','11_1036_705','11_1037_705']);
+const MODULES = ['vendor/fzstd.js', 'vendor/zstddec.js', 'decoder.js',
+                 'image.js', 'worker.js'];
+let requestsReceived = 0, sourcesRequested = 0;
+const prewarmsReceived = new Set();
+
+const readZst = async (key) =>
+  AVAILABLE.has(key) ? (await (await fetch(`./tiles/${key}.zst`)).arrayBuffer()) : null;
+
+let settingsRequested = 0;
+window.addEventListener('message', async (e) => {
+  const d = e.data;
+  if (e.source !== window || !d) return;
+
+  if (d.type === 'wv:settings?') {
+    settingsRequested++;
+    window.postMessage({ type: 'wv:settings', settings: { active: true, opacity: 1, minZoom: 0, quality: 'net' } }, '*');
+    return;
+  }
+
+  // the worker sources: the real bridge reads them through chrome.runtime.getURL,
+  // here we serve them over HTTP -- the blob: rechaining under test is the real one
+  if (d.type === 'wv:sources?') {
+    sourcesRequested++;
+    const texts = {};
+    await Promise.all(MODULES.map(async (f) => {
+      texts[f] = await (await fetch(`./extension/${f}${CACHEBUST}`)).text();
+    }));
+    window.postMessage({ type: 'wv:sources', order: MODULES, texts }, '*');
+    return;
+  }
+
+  // Prefetching: the real bridge asks the service worker to download and cache,
+  // without bringing anything back. Here there is nothing to warm up, but we must
+  // answer -- otherwise the two prefetch slots stay blocked.
+  if (d.type === 'wv:prewarm') {
+    prewarmsReceived.add(`${d.z}/${d.x}/${d.y}`);
+    window.postMessage({ type: 'wv:response', id: d.id, ok: true, prechauffe: true }, '*');
+    return;
+  }
+
+  if (d.type !== 'wv:request') return;
+  requestsReceived++;
+  try {
+    if (d.z === 10) {
+      // z10 is absent from the archive: four raw z11 quadrants
+      const q = [[0, 0], [1, 0], [0, 1], [1, 1]];
+      const pieces = [];
+      for (const [dx, dy] of q) {
+        const zst = await readZst(`11_${d.x * 2 + dx}_${d.y * 2 + dy}`);
+        if (zst) pieces.push({ dx, dy, zst });
+      }
+      if (!pieces.length) {
+        window.postMessage({ type: 'wv:response', id: d.id, ok: true, empty: true }, '*');
+      } else {
+        window.postMessage({ type: 'wv:response', id: d.id, ok: true, quadrants: pieces }, '*',
+                           pieces.map((m) => m.zst));
+      }
+      return;
+    }
+    const zst = await readZst(`${d.z}_${d.x}_${d.y}`);
+    if (!zst) {                                   // simulates a 404 from the archive
+      window.postMessage({ type: 'wv:response', id: d.id, ok: true, empty: true }, '*');
+      return;
+    }
+    window.postMessage({ type: 'wv:response', id: d.id, ok: true, zst }, '*', [zst]);
+  } catch (err) {
+    window.postMessage({ type: 'wv:response', id: d.id, ok: false, error: String(err) }, '*');
+  }
+});
+
+// Level 11 is served straight from wplace: we divert those requests to our local
+// tiles. To be laid BEFORE loading content-main.js, which captures window.fetch
+// on import.
+const LIVE = 'https://backend.wplace.live/files/s0/tiles';
+let liveRequests = 0;
+// for the safety-net bench: 0 = all is well, otherwise we return this error code
+let liveOutage = 0;
+const realFetch = window.fetch.bind(window);
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+  if (url.startsWith(LIVE)) {
+    liveRequests++;
+    if (liveOutage) return new Response('', { status: liveOutage });
+    const m = /\/(\d+)\/(\d+)\.png$/.exec(url);
+    const { decodeTile, toImageData } = await import('./extension/decoder.js' + CACHEBUST);
+    const zst = m && await readZst(`11_${m[1]}_${m[2]}`);
+    if (!zst) return new Response(new Uint8Array(20), { status: 200 });   // wplace's 1x1
+    const t = decodeTile(new Uint8Array(zst));
+    const c = new OffscreenCanvas(t.width, t.height);
+    c.getContext('2d').putImageData(toImageData(t.width, t.height, t.index), 0, 0);
+    return new Response(await c.convertToBlob({ type: 'image/png' }), { status: 200 });
+  }
+  return realFetch(input, init);
+};
+
+// ---------------------------------------------------------------------------
+// 2. Fake MapLibre map: reproduces what the real constructor does (assigning
+//    this._controlPositions) to spring the trap.
+// ---------------------------------------------------------------------------
+const mapLog = { sources: {}, layers: {} };
+class FakeMap {
+  constructor() {
+    this.style = {}; this._listeners = {};
+    // MapLibre 5.21.1 default, read off wplace's bundle
+    this.cancelPendingTileRequestsWhileZooming = true;
+    this._controlPositions = {};          // <- what the trap waits for
+  }
+  getZoom() { return 6; }
+  isStyleLoaded() { return true; }
+  on(ev, fn) { (this._listeners[ev] ||= []).push(fn); }
+  emit(ev) { (this._listeners[ev] || []).forEach(f => f()); }
+  addSource(id, def) { mapLog.sources[id] = def; }
+  getSource(id) { return mapLog.sources[id]; }
+  addLayer(def, before) { mapLog.layers[def.id] = { ...def, before }; }
+  getLayer(id) { return mapLog.layers[id]; }
+  removeLayer(id) { delete mapLog.layers[id]; }
+  removeSource(id) { delete mapLog.sources[id]; }
+  setPaintProperty(id, k, v) { mapLog.layers[id].paint[k] = v; }
+  setLayerZoomRange(id, mn, mx) { Object.assign(mapLog.layers[id], { minzoom: mn, maxzoom: mx }); }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Loads the real content-main.js, then builds the map
+// ---------------------------------------------------------------------------
+const fetchBefore = window.fetch;
+await import('./extension/content-main.js' + CACHEBUST);
+chk('content-main.js loaded, fetch patched', window.fetch !== fetchBefore);
+chk('API exposed', typeof window.__worldview === 'object');
+
+const map = new FakeMap();
+await new Promise(r => setTimeout(r, 30));
+chk('map instance captured by the trap', window.__worldview.map === map);
+
+map.emit('load');
+await new Promise(r => setTimeout(r, 30));
+
+// ---------------------------------------------------------------------------
+// 4. Checking the source and the layer that were laid
+// ---------------------------------------------------------------------------
+const src = mapLog.sources['worldview'], layer = mapLog.layers['worldview'];
+chk('raster source declared', !!src, src && `tileSize ${src.tileSize}, z${src.minzoom}-${src.maxzoom}`);
+chk('tileSize = 512 (same pyramid as the archive)', src?.tileSize === 512);
+chk('source z0-z11: level 11 removes the quality jump',
+    src?.minzoom === 0 && src?.maxzoom === 11, `z${src?.minzoom}-z${src?.maxzoom}`);
+chk('we do NOT touch wplace map internal settings',
+    map.cancelPendingTileRequestsWhileZooming === true,
+    'forcing cancelPendingTileRequestsWhileZooming gained nothing measurable');
+const threshold = window.__worldview.threshold();
+chk('layer visible past the threshold (overlap, no gap)',
+    layer?.maxzoom > threshold && layer?.maxzoom < threshold + 0.6,
+    `maxzoom ${layer?.maxzoom?.toFixed(3)} > threshold ${threshold.toFixed(3)}`);
+
+// ---------------------------------------------------------------------------
+// 5. Does the fetch hook serve real images?
+// ---------------------------------------------------------------------------
+const read = async (z, x, y) => {
+  const r = await fetch(`https://wplace.live/__worldview__/${z}/${x}/${y}.png`);
+  if (r.status !== 200) return { status: r.status };
+  const b = await r.blob();
+  const bmp = await createImageBitmap(b);
+  return { status: 200, w: bmp.width, h: bmp.height, kb: Math.round(b.size / 1024), bmp };
+};
+
+const a = await read(6, 32, 22);
+chk('z6 Europe tile served by the hook', a.status === 200 && a.w === 1000,
+    `${a.w}x${a.h}, ${a.kb} KB`);
+const b = await read(7, 113, 50);
+chk('z7 Japan tile served by the hook', b.status === 200 && b.w === 1000,
+    `${b.w}x${b.h}, ${b.kb} KB`);
+const c = await read(6, 999, 999);
+chk('missing tile -> 204, not an error', c.status === 204, `status ${c.status}`);
+
+// a URL that is not ours must pass through untouched
+const d = await fetch('./vendor/wimage_wasm.js').then(r => r.status).catch(() => 0);
+chk('foreign URL left intact', d === 200, `status ${d}`);
+chk('requests that went through the bridge', requestsReceived === 3, `${requestsReceived} requests`);
+
+// ---------------------------------------------------------------------------
+// 6. Enable / disable toggle
+// ---------------------------------------------------------------------------
+window.__worldview.enable(false);
+chk('disabling removes the layer', !mapLog.layers['worldview']);
+window.__worldview.enable(true);
+chk('re-enabling lays it back', !!mapLog.layers['worldview']);
+window.__worldview.setOpacity(0.5);
+chk('opacity setting applied', mapLog.layers['worldview'].paint['raster-opacity'] === 0.5);
+
+// visual preview
+if (a.bmp) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 1000;
+  const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 1000, 1000);
+  g.drawImage(a.bmp, 0, 0);
+  document.getElementById('view').appendChild(cv);
+}
+
+// ---------------------------------------------------------------------------
+// 7. Settings pushed from the popup
+// ---------------------------------------------------------------------------
+chk('settings asked of the bridge at startup', settingsRequested >= 1, `${settingsRequested} request(s)`);
+
+window.postMessage({ type: 'wv:settings', settings: { active: false } }, '*');
+await new Promise(r => setTimeout(r, 30));
+chk('setting active:false removes the layer', !mapLog.layers['worldview']);
+
+window.postMessage({ type: 'wv:settings', settings: { active: true, opacity: 0.35 } }, '*');
+await new Promise(r => setTimeout(r, 30));
+chk('setting active:true lays it back', !!mapLog.layers['worldview']);
+chk('popup opacity applied when the layer is laid',
+    mapLog.layers['worldview']?.paint?.['raster-opacity'] === 0.35,
+    `read ${mapLog.layers['worldview']?.paint?.['raster-opacity']}`);
+
+window.postMessage({ type: 'wv:settings', settings: { opacity: 0.8 } }, '*');
+await new Promise(r => setTimeout(r, 30));
+chk('opacity changed on the fly without relaying',
+    mapLog.layers['worldview']?.paint?.['raster-opacity'] === 0.8);
+
+// ---------------------------------------------------------------------------
+// 8. The layer is inserted UNDER the native pixels
+// ---------------------------------------------------------------------------
+mapLog.layers['pixel-art-layer'] = { id: 'pixel-art-layer' };
+delete mapLog.layers['worldview'];
+window.__worldview.enable(true);
+chk('layer inserted under pixel-art-layer',
+    mapLog.layers['worldview']?.before === 'pixel-art-layer',
+    `before = ${mapLog.layers['worldview']?.before}`);
+
+
+// ---------------------------------------------------------------------------
+// 9. Continuity: no zoom where nothing shows any more
+// ---------------------------------------------------------------------------
+{
+  const S = window.__worldview.threshold();      // wplace takes over from here
+  const M = window.__worldview.maxLayer();       // our layer is visible below
+  const SRC = window.__worldview.maxSource();   // returns 9 in eco mode, 11 otherwise
+  chk('our layer covers past wplace threshold', M > S,
+      `layer up to ${M.toFixed(2)}, wplace from ${S.toFixed(2)}`);
+  // MapLibre asks for round(Z) on a tileSize 512 source, capped at maxzoom
+  const levels = [];
+  for (let Z = 0; Z < M; Z += 0.25) levels.push(Math.min(SRC, Math.round(Z)));
+  chk('no level past z11 requested', Math.max(...levels) <= 11,
+      `levels requested: z${Math.min(...levels)}-z${Math.max(...levels)}`);
+  // z10 does not exist in the archive: it is rebuilt from four z11 tiles
+  chk('the 9.5-10.5 band goes through z10 (rebuilt)', levels.includes(10));
+  // THIS is the quality-jump fix: past Z 10.5 MapLibre wants level 11. Before,
+  // the source stopping at 10, it upscaled a z10 tile twice over -- then wplace
+  // appeared at 10.6375 with its real pixels.
+  //
+  // We reason on the DESKTOP geometry and not on the bench window: on a narrow
+  // screen wplace switches to tileSize 400, its threshold drops to 10.14 and
+  // that band simply does not exist -- their layer already covers it.
+  const desktopThreshold = 10.5 - Math.log2(512 / 550);        // 10.6375
+  const desktopLevels = [];
+  for (let Z = 0; Z < desktopThreshold + 0.35; Z += 0.25) desktopLevels.push(Math.min(SRC, Math.round(Z)));
+  chk('the 10.5-10.6375 band goes through z11 (no more upscaling)',
+      desktopLevels.includes(11), 'served as-is from wplace');
+}
+
+
+// ---------------------------------------------------------------------------
+// 10. Quality setting: eco / net / live
+// ---------------------------------------------------------------------------
+{
+  const src0 = mapLog.sources['worldview'];
+  chk('default "net" mode -> source up to z11', src0?.maxzoom === 11, `z0-z${src0?.maxzoom}`);
+
+  window.postMessage({ type: 'wv:settings', settings: { quality: 'eco' } }, '*');
+  await new Promise(r => setTimeout(r, 50));
+  const srcEco = mapLog.sources['worldview'];
+  chk('"eco" mode -> source capped back to z9 (source rebuilt)',
+      srcEco?.maxzoom === 9, `z0-z${srcEco?.maxzoom}`);
+  chk('"eco" mode: the layer is properly laid back', !!mapLog.layers['worldview']);
+
+  window.postMessage({ type: 'wv:settings', settings: { quality: 'max' } }, '*');
+  await new Promise(r => setTimeout(r, 50));
+  const srcMax = mapLog.sources['worldview'];
+  chk('"live" mode -> source up to z11 again',
+      srcMax?.maxzoom === 11, `z0-z${srcMax?.maxzoom}`);
+  chk('"live" mode: the layer is properly laid back', !!mapLog.layers['worldview']);
+
+  window.postMessage({ type: 'wv:settings', settings: { quality: 'net' } }, '*');
+  await new Promise(r => setTimeout(r, 50));
+}
+
+
+// ---------------------------------------------------------------------------
+// 11. Robustness: a transient failure must not condemn the tile
+// ---------------------------------------------------------------------------
+{
+  // the fake bridge fails on the first call, succeeds on the second
+  let calls = 0;
+  const handler = async (e) => {
+    const d = e.data;
+    if (e.source !== window || d?.type !== 'wv:request') return;
+    if (d.z !== 7 || d.x !== 64 || d.y !== 44) return;   // only THIS tile
+    calls++;
+    if (calls === 1) {
+      window.postMessage({ type: 'wv:response', id: d.id, ok: false, error: 'network' }, '*');
+      return;
+    }
+    const zst = await (await fetch('./tiles/7_64_44.zst')).arrayBuffer();
+    window.postMessage({ type: 'wv:response', id: d.id, ok: true, zst }, '*', [zst]);
+  };
+  window.addEventListener('message', handler, true);
+
+  const rr = await fetch('https://wplace.live/__worldview__/7/64/44.png');
+  chk('a network failure is retried, not abandoned',
+      rr.status === 200 && calls === 2, `${calls} attempt(s), status ${rr.status}`);
+  window.removeEventListener('message', handler, true);
+}
+
+
+// ---------------------------------------------------------------------------
+// 12. Prefetching the neighbouring ring
+// ---------------------------------------------------------------------------
+{
+  const seen = new Set();
+  const prewarmed = new Set();
+  const spy = (e) => {
+    const d = e.data;
+    // Prefetching no longer goes through 'wv:request': it brings nothing back,
+    // it only asks the service worker to download and cache.
+    if (e.source === window && (d?.type === 'wv:request' || d?.type === 'wv:prewarm')) {
+      seen.add(`${d.z}/${d.x}/${d.y}`);
+      if (d.type === 'wv:prewarm') prewarmed.add(`${d.z}/${d.x}/${d.y}`);
+    }
+  };
+  window.addEventListener('message', spy, true);
+
+  // a tile never requested yet: earlier tests have already prefetched others,
+  // and a tile already seen is deliberately never asked for again
+  await fetch('https://wplace.live/__worldview__/6/56/25.png');
+  chk('the requested tile is indeed loaded', seen.has('6/56/25'));
+
+  // prefetching waits for 350 ms of quiet before starting
+  await new Promise(r => setTimeout(r, 1600));
+  const neighbours = ['6/55/24','6/56/24','6/57/24','6/55/25','6/57/25','6/55/26','6/56/26','6/57/26'];
+  const got = neighbours.filter(v => seen.has(v));
+  chk('the 8 neighbours are prefetched', got.length === 8, `${got.length}/8`);
+  chk('the PARENT tile is prefetched too (that is what serves zooming out)',
+      seen.has('5/28/12'), 'z5 28/12 = parent of z6 56/25');
+  chk('prefetching brings back NO bytes',
+      got.every((v) => prewarmed.has(v)),
+      `${prewarmed.size} tiles warmed with no decoding`);
+
+  // and we do not ask again for what has already been seen
+  const before = seen.size;
+  await fetch('https://wplace.live/__worldview__/6/56/25.png');
+  await new Promise(r => setTimeout(r, 900));
+  chk('no tile is requested twice', seen.size === before,
+      `${seen.size - before} new request(s)`);
+
+  window.removeEventListener('message', spy, true);
+}
+
+// ---------------------------------------------------------------------------
+// N. The safety net: it drops on its own when wplace fails, and not before
+// ---------------------------------------------------------------------------
+{
+  const net = window.__worldview.net;
+  const layerTop = () => mapLog.layers['worldview'].maxzoom;
+
+  net.retract();
+  chk('at rest, the net is retracted', net.deployed === false);
+  chk('at rest, the layer stops at wplace threshold', layerTop() < 11,
+      `maxzoom ${layerTop().toFixed(3)}`);
+
+  // a 404 is NOT an outage: their backend returns it for any tile outside the world
+  for (let i = 0; i < 6; i++) net.note({ ok: false, status: 404 });
+  chk('six 404s trigger nothing', net.deployed === false);
+
+  // two failures are not enough either
+  net.note(null); net.note({ ok: false, status: 503 });
+  chk('two failures are not enough', net.deployed === false);
+
+  net.note({ ok: false, status: 503 });
+  chk('three failures in under a minute deploy the net', net.deployed === true);
+  chk('deployed, the layer drops to native zoom', layerTop() === 24,
+      `maxzoom ${layerTop()}`);
+
+  // deployed, we stop hounding their host: the tile comes from the archive
+  const liveBefore = liveRequests;
+  const seen = new Set();
+  const spy = (e) => {
+    const d = e.data;
+    if (e.source === window && d?.type === 'wv:request') seen.add(`${d.z}/${d.x}/${d.y}`);
+  };
+  window.addEventListener('message', spy, true);
+  await fetch('https://wplace.live/__worldview__/11/1037/705.png');
+  window.removeEventListener('message', spy, true);
+  chk('deployed, not one more request to wplace', liveRequests === liveBefore,
+      `${liveRequests - liveBefore} request(s)`);
+  chk('deployed, the z11 tile comes from the archive', seen.has('11/1037/705'));
+
+  net.retract();
+  chk('the net retracts', net.deployed === false && layerTop() < 11);
+
+  // and the real chain: an actual network outage must fall back to the archive
+  liveOutage = 503;
+  const seen2 = new Set();
+  const spy2 = (e) => {
+    const d = e.data;
+    if (e.source === window && d?.type === 'wv:request') seen2.add(`${d.z}/${d.x}/${d.y}`);
+  };
+  window.addEventListener('message', spy2, true);
+  const resp = await fetch('https://wplace.live/__worldview__/11/1036/705.png');
+  window.removeEventListener('message', spy2, true);
+  liveOutage = 0;
+  chk('wplace down: the z11 tile falls back to the archive', seen2.has('11/1036/705'));
+  chk('... and it really is served, not empty', resp.status === 200, `HTTP ${resp.status}`);
+  net.retract();
+}
+
+say('\n' + (L.some(x => x.includes('FAIL'))
+  ? '<span class=ko><b>SOME TESTS FAIL</b></span>'
+  : '<span class=ok><b>ALL TESTS PASS</b></span>'));
+</script>
