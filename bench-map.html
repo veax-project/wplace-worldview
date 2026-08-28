@@ -1,0 +1,366 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- real MapLibre map</title>
+<link rel="stylesheet" href="./proof/maplibre-gl.css">
+<style>
+  html,body{margin:0;height:100%;background:#14161a;color:#dfe2e8;
+            font:12px/1.5 ui-monospace,monospace}
+  #carte{position:absolute;inset:0}
+  #rapport{position:absolute;right:0;top:0;bottom:0;width:520px;overflow:auto;
+           background:#0f1115ee;padding:14px;white-space:pre-wrap;z-index:5}
+</style>
+<div id="carte"></div>
+<div id="rapport">starting...</div>
+
+<script src="./proof/maplibre-gl.js"></script>
+<script type="module">
+/*
+ * Why this bench exists.
+ *
+ * test-extension.html uses a FAKE map: an object that records the
+ * addSource/addLayer calls. That checks we declare the right things, but it
+ * sees NOTHING of what MapLibre does next -- which tiles it asks for, in what
+ * order, how many, and what it shows while they load.
+ *
+ * That is exactly where the regressions lodged themselves. So this bench loads
+ * the REAL MapLibre 5.21.1 (the version wplace serves), lays down a
+ * pixel-art-layer that imitates theirs, lets our content-main.js graft itself
+ * onto it, and counts every tile request, attributing it to its layer.
+ *
+ * It runs under headless Chrome (tools/measure-map.py): a tab that is not
+ * displayed composes no image, so MapLibre makes no progress there.
+ */
+
+// R is posted to /save/ and read back by tools/measure-map.py. The keys that
+// tool looks up BY NAME -- etapes, nom, total, parQuoi, msComplet, filBloque,
+// tachesLongues, imagesVides, final, errors, console -- are its wire format:
+// renaming them here would break it silently.
+const R = { requests: [], etapes: [], errors: [], console: [] };
+const out = document.getElementById('rapport');
+const say = (s) => { out.textContent += '\n' + s; };
+
+addEventListener('error', (e) => R.errors.push(String(e.message)));
+addEventListener('unhandledrejection', (e) => R.errors.push('rejection: ' + String(e.reason && e.reason.message || e.reason)));
+const warnBefore = console.warn.bind(console);
+console.warn = (...a) => { R.console.push(a.map(String).join(' ')); warnBefore(...a); };
+
+// ---------------------------------------------------------------- local set
+const AVAILABLE = new Set(['5_16_11','6_32_22','7_64_44','5_9_12','6_18_24','7_37_48',
+                           '5_28_12','6_56_25','7_113_50','9_259_176',
+                           '11_1036_704','11_1037_704','11_1036_705','11_1037_705']);
+const MODULES = ['vendor/fzstd.js', 'vendor/zstddec.js', 'decoder.js',
+                 'image.js', 'worker.js'];
+const CACHEBUST = '?v=' + Date.now();
+
+// Any tile at all serves as a template: this bench measures the NUMBER and the
+// ORDER of the requests, not the content. Every request thus gets a valid .zst.
+let template = null;
+const zstTemplate = async () => {
+  if (!template) template = await (await fetch('./tiles/6_32_22.zst')).arrayBuffer();
+  return template.slice(0);
+};
+
+/*
+ * The REAL route, base64 included.
+ *
+ * The MV3 bridge serialises to JSON: the bytes therefore cross over in base64,
+ * and the page decodes them back. Those two steps are not free, and the
+ * decoding happens on the MAIN THREAD. As long as this bench answered with a
+ * ready-to-use ArrayBuffer, it was not measuring what the extension pays.
+ */
+function toBase64(buf) {
+  const u8 = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const likeTheBridge = async (buf) => {
+  const b64 = toBase64(buf);                                    // service worker side
+  return (await realFetch(`data:application/octet-stream;base64,${b64}`)).arrayBuffer();
+};
+
+// ---------------------------------------------------------- counting requests
+const LIVE = 'https://backend.wplace.live/files/s0/tiles';
+const realFetch = window.fetch.bind(window);
+let tilePng = null;
+
+function record(what, z, x, y) {
+  R.requests.push({ what, z, x, y, t: Math.round(performance.now()) });
+}
+
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+
+  // wplace's own native tiles (the ones pixel-art-layer asks for)
+  let m = /__wplace__\/(\d+)\/(\d+)\.png/.exec(url);
+  if (m) {
+    record('wplace', 11, +m[1], +m[2]);
+    return new Response(tilePng, { status: 200, headers: { 'Content-Type': 'image/png' } });
+  }
+  // the ones OUR layer goes and fetches live from wplace
+  m = new RegExp(LIVE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/(\\d+)/(\\d+)\\.png').exec(url);
+  if (m) {
+    record('live', 11, +m[1], +m[2]);
+    return new Response(tilePng, { status: 200, headers: { 'Content-Type': 'image/png' } });
+  }
+  return realFetch(input, init);
+};
+
+// -------------------------------------------------------------- fake bridge
+window.addEventListener('message', async (e) => {
+  const d = e.data;
+  if (e.source !== window || !d) return;
+
+  if (d.type === 'wv:settings?') {
+    window.postMessage({ type: 'wv:settings',
+      settings: { active: true, opacity: 1, minZoom: 0, quality: 'max',
+                  // The safety net is AUTOMATIC now: it only deploys when
+                  // wplace's tiles fail. By default we therefore measure the
+                  // healthy case. ?net=on forces the setting on by hand.
+                  safetyNet: new URLSearchParams(location.search).get('net') === 'on' } }, '*');
+    return;
+  }
+  if (d.type === 'wv:sources?') {
+    const texts = {};
+    await Promise.all(MODULES.map(async (f) => {
+      texts[f] = await (await fetch(`./extension/${f}${CACHEBUST}`)).text();
+    }));
+    // In Direct mode the worker goes and fetches wplace's four live tiles
+    // itself. Their backend answers Access-Control-Allow-Origin:
+    // https://wplace.live, and a Worker created from a blob: inherits the page's
+    // origin -- so in real life it goes through. From this bench, served on
+    // localhost, it does not. Without this detour, level 10 always failed here
+    // and the blank-flash measurement was worth nothing.
+    texts['worker.js'] =
+      "const _rf = self.fetch.bind(self);\n"
+      + "self.fetch = (u, i) => String(u).includes('backend.wplace.live')\n"
+      + "  ? _rf('" + location.origin + "/proof/gabarit.png')\n"
+      + "  : _rf(u, i);\n"
+      + texts['worker.js'];
+    window.postMessage({ type: 'wv:sources', order: MODULES, texts }, '*');
+    return;
+  }
+  if (d.type === 'wv:prewarm') {
+    record('prewarm', d.z, d.x, d.y);
+    window.postMessage({ type: 'wv:response', id: d.id, ok: true, prechauffe: true }, '*');
+    return;
+  }
+  if (d.type !== 'wv:request') return;
+  record('bridge', d.z, d.x, d.y);
+  if (d.z === 10) {
+    const q = [[0,0],[1,0],[0,1],[1,1]];
+    const quadrants = [];
+    for (const [dx, dy] of q) quadrants.push({ dx, dy, zst: await likeTheBridge(await zstTemplate()) });
+    window.postMessage({ type: 'wv:response', id: d.id, ok: true, quadrants }, '*',
+                       quadrants.map((x) => x.zst));
+    return;
+  }
+  const zst = await likeTheBridge(await zstTemplate());
+  window.postMessage({ type: 'wv:response', id: d.id, ok: true, zst }, '*', [zst]);
+});
+
+// --------------------------------------------------- loading our content-main
+await import('./extension/content-main.js' + CACHEBUST);
+
+/*
+ * Instrumentation laid down AFTER content-main, so on top of its hook.
+ *
+ * Counting the bridge's messages was not enough: in Direct mode level 10 does
+ * not go through the bridge -- it is the worker that fetches the four live
+ * tiles itself, in another context. Those requests were therefore invisible.
+ * Here we see what MapLibre asks OUR layer for, and above all what it gets
+ * back: a 200 with bytes, or a 204/404 that will draw nothing.
+ */
+const ourFetch = window.fetch.bind(window);
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+  const m = /__worldview__\/(\d+)\/(\d+)\/(\d+)\.png/.exec(url);
+  if (!m) return ourFetch(input, init);
+  const t0 = performance.now();
+  const res = await ourFetch(input, init);
+  const copy = res.clone();
+  const bytes = res.status === 200 ? (await copy.arrayBuffer()).byteLength : 0;
+  R.requests.push({ what: 'layer', z: +m[1], x: +m[2], y: +m[3],
+                    status: res.status, kb: Math.round(bytes / 1024),
+                    ms: Math.round(performance.now() - t0),
+                    t: Math.round(performance.now()) });
+  return res;
+};
+
+// A REAL 1000x1000 tile for every image answer.
+// A 1x1 PNG would not do: that is precisely what wplace returns for a blank
+// tile, and our code discards it (b.size < 200). The bench was thus measuring
+// itself throwing everything away, and counting empty images that had nothing
+// to do with a real defect.
+tilePng = await (await fetch('./proof/gabarit.png')).arrayBuffer();
+
+// --------------------------------------------------------------- the real map
+const map = new maplibregl.Map({
+  container: 'carte',
+  style: { version: 8, sources: {}, layers: [
+    { id: 'base', type: 'background', paint: { 'background-color': '#e6ebf2' } }] },
+  center: [2.35, 48.86],
+  zoom: 11,
+  attributionControl: false,
+  fadeDuration: 0,
+  // indispensable to read the rendered pixels back: without it the buffer is empty
+  preserveDrawingBuffer: true,
+});
+
+/*
+ * Measuring the "blank flash".
+ *
+ * jumpTo() is instantaneous: it does not reproduce what the user goes through,
+ * zooming with the wheel over ~1 second. So we do a real easeTo and sample the
+ * canvas throughout the transition. A frame is counted BLANK when a majority of
+ * the probed points have the background colour -- that is, when neither of the
+ * two layers has anything to show.
+ */
+const BACKGROUND = [230, 235, 242];
+const probe = document.createElement('canvas');
+probe.width = probe.height = 64;
+const pg = probe.getContext('2d', { willReadFrequently: true });
+
+function blankShare() {
+  const c = map.getCanvas();
+  pg.drawImage(c, 0, 0, c.width, c.height, 0, 0, 64, 64);
+  const d = pg.getImageData(0, 0, 64, 64).data;
+  let blanks = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (Math.abs(d[i] - BACKGROUND[0]) < 12 && Math.abs(d[i + 1] - BACKGROUND[1]) < 12
+        && Math.abs(d[i + 2] - BACKGROUND[2]) < 12) blanks++;
+  }
+  return blanks / (64 * 64);
+}
+
+// A long task is a stutter the user sees. We count them during every
+// transition: that is what "it lags" means.
+let tasks = [];
+try {
+  new PerformanceObserver((l) => { for (const e of l.getEntries()) tasks.push(e.duration); })
+    .observe({ entryTypes: ['longtask'] });
+} catch (e) { /* unavailable */ }
+
+async function transition(name, fromZ, toZ, duration = 1200) {
+  map.jumpTo({ center: [2.35, 48.86], zoom: fromZ });
+  await idle(6000);
+  const start = R.requests.length;
+  const frames = [];
+  tasks = [];
+  const t0 = performance.now();
+  map.easeTo({ zoom: toZ, duration });
+  await new Promise((res) => {
+    const tick = () => {
+      frames.push(blankShare());
+      if (performance.now() - t0 < duration + 400) requestAnimationFrame(tick);
+      else res();
+    };
+    requestAnimationFrame(tick);
+  });
+  await idle(6000);
+  // time between the start of the zoom and the moment nothing loads any more
+  const msDone = Math.round(performance.now() - t0);
+  const worst = Math.max(...frames);
+  const blank = frames.filter((v) => v > 0.6).length;
+  const blocked = Math.round(tasks.reduce((s, d) => s + d, 0));
+  R.etapes.push({ nom: name, total: R.requests.length - start,
+                  parQuoi: { imagesVides: blank, imagesTotal: frames.length,
+                             pireVide: Math.round(worst * 100) + '%',
+                             msComplet: msDone, filBloque: blocked,
+                             tachesLongues: tasks.length } });
+  say(`${name.padEnd(28)} ${String(R.requests.length - start).padStart(3)} req  ` +
+      `${String(msDone).padStart(5)} ms to settle  ` +
+      `main blocked ${String(blocked).padStart(4)} ms (${tasks.length})  ` +
+      `${blank} blank`);
+}
+
+const idle = (max = 4000) => new Promise((res) => {
+  let done = false;
+  const ok = () => { if (!done) { done = true; res(true); } };
+  map.once('idle', ok);
+  setTimeout(ok, max);
+});
+
+await new Promise((res) => map.on('load', res));
+
+// wplace's native layer, reproduced exactly as they declare it
+map.addSource('pixel-art-layer', {
+  type: 'raster',
+  tiles: ['https://backend.wplace.live/files/s0/tiles/{x}/{y}.png'],
+  minzoom: 11, maxzoom: 11,
+  tileSize: innerWidth > 640 ? 550 : 400,
+});
+map.addLayer({ id: 'pixel-art-layer', type: 'raster', source: 'pixel-art-layer',
+               paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } });
+await idle();
+
+// ?cancel=default: puts MapLibre's original setting back, to compare.
+// content-main.js sets it to false so that parent tiles are held during a zoom;
+// it remains to be checked that this does not set off an avalanche of ancestor
+// requests, since the retention loop creates them up to ten levels above.
+const NO_OVERRIDE = new URLSearchParams(location.search).get('cancel') === 'default';
+if (NO_OVERRIDE) map.cancelPendingTileRequestsWhileZooming = true;
+
+// ------------------------------------------------------------ the scenario
+const step = async (name, run) => {
+  const start = R.requests.length;
+  const t0 = performance.now();
+  await run();
+  await idle();
+  const fresh = R.requests.slice(start);
+  const byWhat = {};
+  for (const r of fresh) {
+    const key = r.what === 'layer' ? `layer z${r.z}:${r.status}`
+              : (r.what === 'bridge' || r.what === 'prewarm') ? `${r.what} z${r.z}` : r.what;
+    byWhat[key] = (byWhat[key] || 0) + 1;
+  }
+  R.etapes.push({ nom: name, ms: Math.round(performance.now() - t0), total: fresh.length,
+                  parQuoi: byWhat });
+  say(`${name.padEnd(30)} ${String(fresh.length).padStart(4)} requests  ` +
+      `${String(Math.round(performance.now() - t0)).padStart(5)} ms`);
+  say('   ' + Object.entries(byWhat).map(([k, v]) => `${k}=${v}`).join('  '));
+};
+
+const goTo = (z, lng = 2.35, lat = 48.86) =>
+  new Promise((res) => { map.jumpTo({ center: [lng, lat], zoom: z }); setTimeout(res, 60); });
+
+say('--- native zoom: wplace\'s layer must serve ---');
+await step('z11.5 (native)', () => goTo(11.5));
+await step('z10.8 (overlap band)', () => goTo(10.8));
+await step('z10.2', () => goTo(10.2));
+await step('z9', () => goTo(9));
+await step('z7', () => goTo(7));
+await step('z5', () => goTo(5));
+say('\n--- back to native zoom ---');
+await step('z9 (back)', () => goTo(9));
+await step('z10.8 (back)', () => goTo(10.8));
+await step('z11.5 (back to native)', () => goTo(11.5));
+say('\n--- lateral movement at native zoom ---');
+await step('pan at z11.5', () => goTo(11.5, 2.55, 48.96));
+
+// THIS is the "blank flash": a real continuous zoom, not a jump.
+say('\n--- continuous zooms: the blank flash ---');
+await transition('zoom out 11.5 -> 9', 11.5, 9);
+await transition('zoom out 11.5 -> 6', 11.5, 6);
+await transition('zoom in 6 -> 11.5', 6, 11.5);
+await transition('zoom out 10.9 -> 10.2 (switch)', 10.9, 10.2, 900);
+
+// --------------------------------------------------------- what the map shows
+const src = map.getSource('worldview');
+R.final = {
+  ourLayer: !!map.getLayer('worldview'),
+  wplaceLayer: !!map.getLayer('pixel-art-layer'),
+  sourceMaxzoom: src && src.maxzoom,
+  cancellationDisabled: map.cancelPendingTileRequestsWhileZooming === false,
+  requestsTotal: R.requests.length,
+  wplaceServed: R.requests.filter((r) => r.what === 'wplace').length,
+};
+say('\n' + JSON.stringify(R.final, null, 1));
+
+await realFetch('/save/rapport-carte.json', {
+  method: 'POST',
+  body: JSON.stringify(R, null, 1),
+});
+window.__done = true;
+say('\n=== DONE ===');
+</script>

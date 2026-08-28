@@ -1,0 +1,20 @@
+# Original decoder (Hugi-R), kept locally only as a test reference.
+# It is neither used by the extension, nor redistributed.
+/vendor/
+
+# Test tiles and images produced by the test benches
+tiles/
+proof/
+out/
+.tilecache/
+
+# Packages built for the Store
+*.zip
+promo/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local tools, outside the project
+.claude/

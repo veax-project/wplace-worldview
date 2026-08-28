@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- decoding the preview tiles</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .dim{opacity:.55}
+  #log{white-space:pre-wrap;margin:0 0 18px}
+  #views{display:flex;flex-wrap:wrap;gap:14px}
+  figure{margin:0}
+  canvas{image-rendering:pixelated;border:1px solid #2e3138;border-radius:6px;background:#fff;
+    width:300px;height:300px}
+  figcaption{font-size:11px;opacity:.7;margin-top:4px}
+</style>
+<div id="log">running...</div>
+<div id="views"></div>
+<script type="module">
+const L = [];
+const el = document.getElementById('log');
+const say = s => { L.push(s); el.innerHTML = L.join('\n'); };
+const chk = (n, c, d) => say(`${c ? '<span class=ok>[OK]  </span>' : '<span class=ko>[FAIL]</span>'} ${n}${d ? '  <span class=dim>-- ' + d + '</span>' : ''}`);
+
+const VERSION = 14353;
+const TILES = [
+  ['Europe',  5, 16, 11], ['Europe',  6, 32, 22], ['Europe',  7, 64, 44],
+  ['USA',     5,  9, 12], ['USA',     6, 18, 24], ['USA',     7, 37, 48],
+  ['Japan',   5, 28, 12], ['Japan',   6, 56, 25], ['Japan',   7, 113, 50],
+];
+
+try {
+  // 1. does the WASM module load from an origin OTHER than eralyon?
+  const t0 = performance.now();
+  const mod = await import('./vendor/wimage_wasm.js');
+  await mod.default();
+  mod.init_panic_hook?.();
+  chk('WASM module loaded outside the original site', true,
+      `${(performance.now() - t0).toFixed(0)} ms - origin ${location.origin}`);
+  chk('get_image function exported', typeof mod.get_image === 'function');
+
+  // 2. decoding each tile
+  const views = document.getElementById('views');
+  let okCount = 0, totalIn = 0, totalMs = 0;
+
+  for (const [name, z, x, y] of TILES) {
+    const t1 = performance.now();
+    let bytes;
+    try {
+      const r = await fetch(`./tiles/${z}_${x}_${y}.zst`);
+      if (!r.ok) { chk(`${name} z${z}`, false, `fetch ${r.status}`); continue; }
+      bytes = new Uint8Array(await r.arrayBuffer());
+    } catch (e) { chk(`${name} z${z}`, false, 'fetch: ' + e.message); continue; }
+
+    let png;
+    try {
+      png = mod.get_image(VERSION, bytes);
+    } catch (e) { chk(`${name} z${z}`, false, 'get_image: ' + e); continue; }
+
+    const bmp = await createImageBitmap(new Blob([new Uint8Array(png)], { type: 'image/png' }));
+    const ms = performance.now() - t1;
+    totalIn += bytes.length; totalMs += ms; okCount++;
+
+    const c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    g.drawImage(bmp, 0, 0);
+
+    // real fill rate
+    const d = g.getImageData(0, 0, bmp.width, bmp.height).data;
+    let painted = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i]) painted++;
+
+    const f = document.createElement('figure');
+    f.appendChild(c);
+    const cap = document.createElement('figcaption');
+    cap.textContent = `${name} z${z} ${x}/${y} -- ${bmp.width}x${bmp.height} - ${(painted / (bmp.width * bmp.height) * 100).toFixed(1)} % painted - ${ms.toFixed(0)} ms`;
+    f.appendChild(cap);
+    views.appendChild(f);
+
+    chk(`${name} z${z} ${x}/${y}`, true,
+        `${(bytes.length / 1024).toFixed(0)} KB -> ${bmp.width}x${bmp.height} in ${ms.toFixed(0)} ms`);
+  }
+
+  say('');
+  chk(`decoding: ${okCount}/${TILES.length} tiles`, okCount === TILES.length,
+      `${(totalIn / 1024 / 1024).toFixed(1)} MB in - ${(totalMs / okCount).toFixed(0)} ms/tile on average`);
+  say('\n' + (L.some(l => l.includes('FAIL'))
+    ? '<span class=ko><b>FAILED -- the format does not decode off-site</b></span>'
+    : '<span class=ok><b>THE CHAIN WORKS OUTSIDE THE ORIGINAL SITE</b></span>'));
+} catch (e) {
+  say(`<span class=ko>EXCEPTION ${e.message}</span>\n${e.stack}`);
+}
+</script>

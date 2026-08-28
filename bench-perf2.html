@@ -1,0 +1,287 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Measurement bench -- decoding architectures</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px;margin:0}
+  h2{font-size:13px;margin:22px 0 8px;color:#7ee7a8}
+  table{border-collapse:collapse;margin:6px 0 14px}
+  th,td{padding:3px 14px 3px 0;text-align:right;white-space:nowrap}
+  th{color:#8b93a1;font-weight:400;border-bottom:1px solid #2a2e36}
+  td:first-child,th:first-child{text-align:left}
+  .fort{color:#ffb454} .ok{color:#7ee7a8} .ko{color:#ff6b8a} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+</style>
+<div id="log">measuring...</div>
+
+<script type="module">
+const BASE = location.origin;
+const CACHEBUST = '?v=' + Date.now();
+const el = document.getElementById('log');
+const L = [];
+const say = (s) => { L.push(s); el.innerHTML = L.join('\n'); };
+const kb = (n) => (n / 1024).toFixed(0);
+
+const { decodeTile, toImageData, PALETTE } = await import('./extension/decoder.js' + CACHEBUST);
+
+// ---------------------------------------------------------------- sample set
+// 12 tiles: what MapLibre asks for on a 1280x800 screen at tileSize 512.
+const NAMES = ['5_16_11', '6_32_22', '6_18_24', '7_64_44', '7_113_50', '9_259_176',
+               '11_1037_704', '6_32_22', '5_16_11', '7_64_44', '6_18_24', '9_259_176'];
+const SAMPLES = [];
+for (const n of NAMES) {
+  SAMPLES.push(new Uint8Array(await (await fetch(`./tiles/${n}.zst`)).arrayBuffer()));
+}
+say(`<span class=dim>sample set: ${SAMPLES.length} tiles, ` +
+    `${kb(SAMPLES.reduce((s, t) => s + t.byteLength, 0))} KB of .zst</span>`);
+
+// ------------------------------------------------ watching the main thread
+// A long task is a visible stutter. We count them during every run.
+let tasks = [];
+try {
+  new PerformanceObserver((l) => { for (const e of l.getEntries()) tasks.push(e.duration); })
+    .observe({ entryTypes: ['longtask'] });
+} catch (e) { say('<span class=ko>longtask unavailable</span>'); }
+
+const measure = async (name, f) => {
+  tasks = [];
+  await new Promise((r) => setTimeout(r, 250));       // let the previous run settle
+  const t0 = performance.now();
+  const res = await f();
+  const ms = performance.now() - t0;
+  await new Promise((r) => setTimeout(r, 60));        // let the longtask entries arrive
+  const blocked = tasks.reduce((s, d) => s + d, 0);
+  return { name, ms, blocked, worst: Math.max(0, ...tasks), n: tasks.length, res };
+};
+
+// =========================================================== A. as-is, inline
+function toBase64(buf) {
+  const u8 = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function current() {
+  const out = [];
+  for (const zst of SAMPLES) {
+    // what the service worker does
+    const { width, height, index } = decodeTile(zst);
+    const canvas = new OffscreenCanvas(width, height);
+    canvas.getContext('2d').putImageData(toImageData(width, height, index), 0, 0);
+    const png = await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
+    const b64 = toBase64(png);
+    // what the page does
+    const buf = await (await fetch(`data:image/png;base64,${b64}`)).arrayBuffer();
+    const bmp = await createImageBitmap(new Blob([buf], { type: 'image/png' }));
+    out.push(bmp.width); bmp.close();
+  }
+  return out.length;
+}
+
+// ============================================================= BMP encoder
+// A BMP is a header then the raw pixels: no compression at all, so encoding is
+// nearly free, where PNG costs a zlib pass over 4 MB.
+// BITMAPV4HEADER (108 bytes) because we need the alpha channel: wplace's
+// unpainted areas are transparent, and a 24-bit BMP would lose them.
+function toBmp(width, height, bgra) {
+  const header = 14 + 108;
+  const buf = new ArrayBuffer(header + bgra.byteLength);
+  const v = new DataView(buf);
+  v.setUint16(0, 0x4d42, true);                       // 'BM'
+  v.setUint32(2, buf.byteLength, true);
+  v.setUint32(10, header, true);                      // where the pixels start
+  v.setUint32(14, 108, true);                         // size of the V4 header
+  v.setInt32(18, width, true);
+  v.setInt32(22, -height, true);                      // negative = top-down
+  v.setUint16(26, 1, true);                           // planes
+  v.setUint16(28, 32, true);                          // bits per pixel
+  v.setUint32(30, 3, true);                           // BI_BITFIELDS
+  v.setUint32(34, bgra.byteLength, true);
+  v.setUint32(54, 0x00ff0000, true);                  // red mask
+  v.setUint32(58, 0x0000ff00, true);                  // green mask
+  v.setUint32(62, 0x000000ff, true);                  // blue mask
+  v.setUint32(66, 0xff000000, true);                  // alpha mask
+  v.setUint32(70, 0x73524742, true);                  // 'BGRs': sRGB
+  new Uint8Array(buf, header).set(bgra);
+  return buf;
+}
+
+// palette -> BGRA directly: no extra swizzle pass
+function toBgra(width, height, index, palette) {
+  const out = new Uint8Array(width * height * 4);
+  const v = new DataView(out.buffer);
+  const table = new Uint32Array(palette.length);
+  for (let i = 1; i < palette.length; i++) {
+    const [r, g, b] = palette[i];
+    table[i] = (255 << 24) | (r << 16) | (g << 8) | b;   // ARGB little-endian = BGRA
+  }
+  for (let i = 0; i < index.length; i++) {
+    const c = index[i];
+    if (c) v.setUint32(i * 4, table[c], true);
+  }
+  return out;
+}
+
+async function bmpInline() {
+  const out = [];
+  for (const zst of SAMPLES) {
+    const { width, height, index } = decodeTile(zst);
+    const bmp = toBmp(width, height, toBgra(width, height, index, PALETTE));
+    const img = await createImageBitmap(new Blob([bmp], { type: 'image/bmp' }));
+    out.push(img.width); img.close();
+  }
+  return out.length;
+}
+
+// ======================================================= pool of Web Workers
+const SRC_WORKER = (format) => `
+import { decodeTile, toImageData, PALETTE } from '${BASE}/extension/decoder.js${CACHEBUST}';
+${toBmp.toString()}
+${toBgra.toString()}
+self.onmessage = async (e) => {
+  const { id, zst } = e.data;
+  const { width, height, index } = decodeTile(new Uint8Array(zst));
+  let buf, type;
+  if ('${format}' === 'bmp') {
+    buf = toBmp(width, height, toBgra(width, height, index, PALETTE));
+    type = 'image/bmp';
+  } else {
+    const t = new OffscreenCanvas(width, height);
+    t.getContext('2d').putImageData(toImageData(width, height, index), 0, 0);
+    buf = await (await t.convertToBlob({ type: 'image/png' })).arrayBuffer();
+    type = 'image/png';
+  }
+  self.postMessage({ id, buf, type }, [buf]);
+};`;
+
+function makePool(format, size) {
+  const url = URL.createObjectURL(new Blob([SRC_WORKER(format)], { type: 'text/javascript' }));
+  const workers = [];
+  for (let i = 0; i < size; i++) workers.push(new Worker(url, { type: 'module' }));
+  URL.revokeObjectURL(url);
+  const idle = [...workers];
+  const queue = [];
+  let n = 0;
+  const waiting = new Map();
+
+  const serve = () => {
+    while (idle.length && queue.length) {
+      const w = idle.pop();
+      const { zst, resolve, reject } = queue.shift();
+      const id = ++n;
+      waiting.set(id, { resolve, reject, w });
+      w.postMessage({ id, zst: zst.buffer.slice(0) }, []);
+    }
+  };
+  for (const w of workers) {
+    w.onmessage = (e) => {
+      const a = waiting.get(e.data.id);
+      waiting.delete(e.data.id);
+      idle.push(a.w);
+      a.resolve(e.data);
+      serve();
+    };
+    w.onerror = (err) => { console.error(err); };
+  }
+  return {
+    process: (zst) => new Promise((resolve, reject) => { queue.push({ zst, resolve, reject }); serve(); }),
+    close: () => workers.forEach((w) => w.terminate()),
+  };
+}
+
+async function viaPool(format, size) {
+  const pool = makePool(format, size);
+  // warm-up: the first message includes loading the module
+  await pool.process(SAMPLES[0]);
+  const t0 = performance.now();
+  const res = await Promise.all(SAMPLES.map(async (zst) => {
+    const { buf, type } = await pool.process(zst);
+    const img = await createImageBitmap(new Blob([buf], { type }));
+    const w = img.width; img.close();
+    return w;
+  }));
+  const ms = performance.now() - t0;
+  pool.close();
+  return { n: res.length, ms };
+}
+
+// ====================================================================== runs
+const R = [];
+R.push(await measure('current -- PNG, all inline', current));
+R.push(await measure('BMP, all inline', bmpInline));
+
+const CORES = navigator.hardwareConcurrency || 4;
+for (const size of [2, 4, Math.min(8, CORES)]) {
+  R.push(await measure(`pool x${size} -- PNG`, () => viaPool('png', size)));
+  R.push(await measure(`pool x${size} -- BMP`, () => viaPool('bmp', size)));
+}
+
+const ref = R[0].ms;
+say('<h2>12 tiles, wall clock and main thread blocked</h2>');
+say('<table><tr><th>architecture</th><th>wall clock</th><th>gain</th>' +
+    '<th>main thread blocked</th><th>worst task</th></tr>' +
+    R.map((r) => {
+      const g = ref / r.ms;
+      return `<tr><td>${r.name}</td><td>${r.ms.toFixed(0)} ms</td>` +
+        `<td class="${g > 1.5 ? 'ok' : g < 0.9 ? 'ko' : ''}">x${g.toFixed(2)}</td>` +
+        `<td class="${r.blocked > 300 ? 'fort' : r.blocked < 120 ? 'ok' : ''}">${r.blocked.toFixed(0)} ms` +
+        `<span class=dim> (${r.n})</span></td>` +
+        `<td class="${r.worst > 150 ? 'ko' : ''}">${r.worst.toFixed(0)} ms</td></tr>`;
+    }).join('') + '</table>');
+
+// ------------------------------------------- detail: BMP vs PNG, one tile
+{
+  const zst = SAMPLES[1];
+  const { width, height, index } = decodeTile(zst);
+  const timeIt = async (n, f) => {
+    const t = [];
+    for (let i = 0; i < n; i++) { const a = performance.now(); await f(); t.push(performance.now() - a); }
+    t.sort((x, y) => x - y); return t[t.length >> 1];
+  };
+
+  const msBgra = await timeIt(5, () => { toBgra(width, height, index, PALETTE); });
+  const bgra = toBgra(width, height, index, PALETTE);
+  const msWrapBmp = await timeIt(5, () => { toBmp(width, height, bgra); });
+  const bmpBuf = toBmp(width, height, bgra);
+  const blobBmp = new Blob([bmpBuf], { type: 'image/bmp' });
+  const msReadBmp = await timeIt(5, async () => { (await createImageBitmap(blobBmp)).close(); });
+
+  const msRgba = await timeIt(5, () => { toImageData(width, height, index); });
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext('2d').putImageData(toImageData(width, height, index), 0, 0);
+  const msPng = await timeIt(3, () => canvas.convertToBlob({ type: 'image/png' }));
+  const pngBuf = await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
+  const blobPng = new Blob([pngBuf], { type: 'image/png' });
+  const msReadPng = await timeIt(5, async () => { (await createImageBitmap(blobPng)).close(); });
+
+  // is the BMP correct? we compare a few pixels against the PNG rendering
+  const pixelsOf = async (b) => {
+    const im = await createImageBitmap(b);
+    const [w, h] = [im.width, im.height];              // read BEFORE closing
+    const c = new OffscreenCanvas(w, h);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(im, 0, 0); im.close();
+    return g.getImageData(0, 0, w, h).data;
+  };
+  const a = await pixelsOf(blobBmp), b = await pixelsOf(blobPng);
+  let diffs = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const oa = a[i + 3] > 0, ob = b[i + 3] > 0;
+    if (oa !== ob || (oa && (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]))) diffs++;
+  }
+
+  say('<h2>BMP against PNG, one dense z6 tile</h2>');
+  say('<table><tr><th></th><th>-> pixels</th><th>encoding</th><th>size</th><th>-> ImageBitmap</th><th>total</th></tr>' +
+    `<tr><td>PNG</td><td>${msRgba.toFixed(1)} ms</td><td class=fort>${msPng.toFixed(1)} ms</td>` +
+    `<td>${kb(pngBuf.byteLength)} KB</td><td>${msReadPng.toFixed(1)} ms</td>` +
+    `<td><b>${(msRgba + msPng + msReadPng).toFixed(1)} ms</b></td></tr>` +
+    `<tr><td>BMP</td><td>${msBgra.toFixed(1)} ms</td><td class=ok>${msWrapBmp.toFixed(1)} ms</td>` +
+    `<td class=fort>${kb(bmpBuf.byteLength)} KB</td><td class="${msReadBmp < msReadPng ? 'ok' : 'ko'}">${msReadBmp.toFixed(1)} ms</td>` +
+    `<td><b>${(msBgra + msWrapBmp + msReadBmp).toFixed(1)} ms</b></td></tr></table>`);
+  say(`  <span class="${diffs ? 'ko' : 'ok'}">BMP renders identically to PNG: ` +
+      `${diffs === 0 ? 'yes, 0 pixel differs' : diffs + ' pixels differ'}</span>`);
+}
+
+say(`\n<span class=dim>${CORES} cores</span>`);
+window.__done = true;
+</script>

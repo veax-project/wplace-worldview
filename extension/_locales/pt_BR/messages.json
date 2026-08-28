@@ -1,0 +1,167 @@
+{
+  "extensionName": {
+    "message": "Wplace WorldView"
+  },
+  "extensionDescription": {
+    "message": "Veja os desenhos do wplace.live mesmo com o zoom afastado, onde o site não mostra nada."
+  },
+  "panelTitle": {
+    "message": "Visão do mundo"
+  },
+  "panelIntro": {
+    "message": "Mostra os desenhos mesmo com o zoom afastado, onde o wplace deixa de exibi-los."
+  },
+  "enable": {
+    "message": "Ativar"
+  },
+  "quality": {
+    "message": "Qualidade"
+  },
+  "qualityLight": {
+    "message": "Leve"
+  },
+  "qualitySharp": {
+    "message": "Nítida"
+  },
+  "qualityLive": {
+    "message": "Ao vivo"
+  },
+  "helpLight": {
+    "message": "Menos dados. Fica um pouco borrado entre o zoom 9.5 e 10.6."
+  },
+  "helpSharp": {
+    "message": "Reconstrói o nível de zoom que falta a partir do arquivo. Dados de 1 a 3 dias atrás."
+  },
+  "helpLive": {
+    "message": "Reconstrói direto do wplace: atualizado ao segundo, mesmo peso."
+  },
+  "opacity": {
+    "message": "Opacidade"
+  },
+  "clearCache": {
+    "message": "Limpar cache"
+  },
+  "clearing": {
+    "message": "Limpando…"
+  },
+  "close": {
+    "message": "fechar"
+  },
+  "archiveUnreachable": {
+    "message": "Arquivo fora do ar."
+  },
+  "freshnessLive": {
+    "message": "De perto: <b>ao vivo</b><br>De longe: <b>{DATE}</b>"
+  },
+  "freshnessArchive": {
+    "message": "Momento de <b>{DATE}</b>{BEHIND}"
+  },
+  "behind": {
+    "message": " — <b>{H} h</b> de atraso"
+  },
+  "cacheState": {
+    "message": "Cache: <b>{N}</b> / {MAX} blocos"
+  },
+  "settingsInMap": {
+    "message": "As configurações ficam no mapa, na própria barra de ferramentas do wplace."
+  },
+  "welcomeTitle": {
+    "message": "WorldView instalado"
+  },
+  "welcomeText": {
+    "message": "As configurações ficam bem aqui, na própria barra de ferramentas do wplace. Clique no globo para mudar a qualidade ou a opacidade."
+  },
+  "welcomeGotIt": {
+    "message": "Entendi"
+  },
+  "showTitle": {
+    "message": "Bem aqui"
+  },
+  "showText": {
+    "message": "Este é o botão do WorldView, encaixado na própria barra de ferramentas do wplace. Clique nele para qualidade, opacidade e o download do mapa."
+  },
+  "clearTitle": {
+    "message": "Limpar o cache?"
+  },
+  "clearText": {
+    "message": "Os blocos guardados serão apagados. Eles voltam sozinhos conforme você navega, então nada se perde — o mapa só fica mais lento por um instante."
+  },
+  "clearConfirm": {
+    "message": "Limpar"
+  },
+  "cancel": {
+    "message": "Cancelar"
+  },
+  "reserveTitle": {
+    "message": "Baixar o mundo"
+  },
+  "reserveText": {
+    "message": "Baixa os níveis de zoom afastado uma vez e guarda tudo. Depois disso, afastar o zoom é instantâneo. Você pode fechar esta janela e continuar jogando — o download segue em segundo plano, e o botão mostra o progresso."
+  },
+  "reserveWorld": {
+    "message": "Mundo · 175 MB"
+  },
+  "reserveDetailed": {
+    "message": "Detalhado · 510 MB"
+  },
+  "reserveProgress": {
+    "message": "{DONE} / {TOTAL} blocos · {MB} MB"
+  },
+  "reserveStop": {
+    "message": "Parar"
+  },
+  "reserveReady": {
+    "message": "Pronto · {N} blocos guardados"
+  },
+  "reserveDelete": {
+    "message": "Deletar"
+  },
+  "reserveCourtesy": {
+    "message": "O arquivo é servido por um CDN com cache de 4 horas, então quase nada disso chega à máquina de origem."
+  },
+  "reserveRemaining": {
+    "message": " · faltam ~{MIN} min"
+  },
+  "reserveClearTitle": {
+    "message": "Deletar o mapa baixado?"
+  },
+  "reserveClearText": {
+    "message": "Os níveis guardados serão removidos. Afastar o zoom vai carregar pela rede de novo, e baixar tudo outra vez leva vários minutos."
+  },
+  "reserveDoneTitle": {
+    "message": "Mapa baixado"
+  },
+  "reserveDoneText": {
+    "message": "{N} blocos guardados. Daqui em diante, afastar o zoom é instantâneo — aproveite."
+  },
+  "popupHelp": {
+    "message": "Como funciona"
+  },
+  "popupBug": {
+    "message": "Relatar um problema"
+  },
+  "popupEmail": {
+    "message": "Fale comigo"
+  },
+  "popupPrivacy": {
+    "message": "Política de privacidade"
+  },
+  "popupShow": {
+    "message": "Mostrar o botão"
+  },
+  "popupUnofficial": {
+    "message": "Extensão não oficial. Sem vínculo com o wplace.live."
+  },
+  "reserveDated": {
+    "message": "De longe: momento de {DATE}"
+  },
+  "reserveUpdate": {
+    "message": "Atualizar"
+  },
+  "safetyNet": {
+    "message": "Rede de segurança"
+  },
+  "safetyNetHelp": {
+    "message": "Entra em ação sozinha quando os blocos do wplace param de carregar: nossa camada desliza por baixo da deles e mostra os desenhos arquivados em vez de um mapa vazio, e sai de cena assim que o wplace se recupera. Não custa nada enquanto tudo vai bem. Ative para deixá-la sempre de prontidão."
+  }
+}

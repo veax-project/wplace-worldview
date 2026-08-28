@@ -1,0 +1,350 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- embedded interface</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px;margin:0}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+  /* minimal daisyUI stand-in, just so the elements have a size */
+  dialog.modal{border:0;padding:0}
+  dialog.modal::backdrop{background:#0009}
+  .modal-box{background:#1b1e24;padding:16px;border-radius:12px;width:420px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;border-radius:8px;
+       background:#2a2f38;border:1px solid #3a3f48;cursor:pointer;padding:6px}
+  .btn-square{width:38px;height:38px;padding:0}
+  .size-5{width:20px;height:20px}
+  .flex{display:flex}.flex-col{flex-direction:column}.items-center{align-items:center}.gap-3{gap:12px}
+</style>
+<div id="log">running...</div>
+
+<!-- reproduction of wplace's right-hand toolbar -->
+<div class="absolute right-2 top-2 z-30">
+  <div class="flex flex-col items-center gap-3" id="bar">
+    <button class="btn btn-square shadow-md" title="Store">S</button>
+    <button class="btn btn-square relative shadow-md" title="Leaderboard">L</button>
+    <button class="btn btn-square shadow-md" title="Search">R</button>
+    <button class="btn btn-square shadow-md" title="Alliance">A</button>
+    <button title="Overlays" class="btn btn-square shadow-md">O</button>
+  </div>
+</div>
+
+<script type="module">
+// ES modules are cached independently of the page:
+// without this parameter we read the old code back after a change
+const CACHEBUST = '?v=' + Date.now();
+const L=[], el=document.getElementById('log');
+const say=s=>{L.push(s);el.innerHTML=L.join('\n')};
+const chk=(n,c,d)=>say(`${c?'<span class=ok>[OK]  </span>':'<span class=ko>[FAIL]</span>'} ${n}${d?'  <span class=dim>-- '+d+'</span>':''}`);
+
+// --- fake ISOLATED bridge: answers the interface's actions --------------------
+const store = { active: true, opacity: 1, minZoom: 0, quality: 'net' };
+// what content-iso.js reads from _locales/en/messages.json
+const TEXTS = {
+  panelTitle: 'World view', panelIntro: 'Shows the drawings even when zoomed out.',
+  enable: 'Enable', quality: 'Quality',
+  qualityLight: 'Light', qualitySharp: 'Sharp', qualityLive: 'Live',
+  helpLight: 'Least data.', helpSharp: 'Rebuilds from the archive.', helpLive: 'Live from wplace.',
+  opacity: 'Opacity', clearCache: 'Clear cache', clearing: 'Clearing…',
+  close: 'close', archiveUnreachable: 'Archive unreachable.',
+  freshnessLive: 'Close-up: <b>live</b><br>Wide view: <b>{DATE}</b>',
+  freshnessArchive: 'Snapshot from <b>{DATE}</b>{BEHIND}',
+  behind: ' — <b>{H} h</b> behind', cacheState: 'Cache: <b>{N}</b> / {MAX} tiles',
+};
+let writes = 0, cacheClears = 0;
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (e.source !== window || d?.type !== 'wv:action') return;
+  const reply = (valeur) => window.postMessage({ type: 'wv:return', id: d.id, valeur }, '*');
+  if (d.action === 'settings') return reply({ ...store, texts: TEXTS });
+  if (d.action === 'set') { Object.assign(store, d.charge); writes++; return reply({ ok: true }); }
+  if (d.action === 'stats') return reply({ ok: true, entries: 137, max: 500, quality: store.quality,
+                                           version: { date: '2026-08-22T01' } });
+  if (d.action === 'reserveState') return reply({ ok: true, etat: null });
+  if (d.action === 'clear') { cacheClears++; return reply({ ok: true }); }
+  reply(null);
+});
+
+// content-main.js lays the MapLibre trap; here only the UI is of interest
+window.__worldview = { state: store, map: null, threshold: () => 10.6, maxLayer: () => 10.95 };
+
+await import('./extension/ui.js' + CACHEBUST);
+await new Promise(r => setTimeout(r, 120));
+
+// --- 1. is the button laid in the right place? --------------------------------
+const b = document.getElementById('wv-bouton');
+const o = document.querySelector('button[title="Overlays"]');
+chk('button injected', !!b);
+chk('placed LAST in the bar', document.getElementById('bar').lastElementChild === b);
+chk('same classes as the site buttons', b?.className === o?.className, b?.className);
+chk('icon in the site format (viewBox 0 -960 960 960, size-5)',
+    !!b?.querySelector('svg[viewBox="0 -960 960 960"] '), b?.querySelector('svg')?.getAttribute('class'));
+chk('in the same vertical bar', b?.parentElement?.id === 'bar');
+
+// --- 2. the panel --------------------------------------------------------------
+b.click();
+await new Promise(r => setTimeout(r, 120));
+const p = document.getElementById('wv-panneau');
+chk('it is a real <dialog> modal', p?.tagName === 'DIALOG', p?.tagName);
+chk('modal opened on click', p?.open === true);
+chk('site modal classes', p?.className === 'modal', p?.className);
+const box = p?.querySelector('.modal-box');
+chk('contains a modal-box', !!box);
+chk('rounded-xl radius like the site modals (not daisyUI 2rem)',
+    box?.classList.contains('rounded-xl'), box?.className.split(/\s+/).slice(0,6).join(' '));
+chk('full screen on mobile as on their side',
+    box?.className.includes('max-sm:!rounded-none') && box?.className.includes('max-sm:!w-full'));
+chk('contains a dimmed backdrop (modal-backdrop)', !!p?.querySelector('.modal-backdrop'));
+chk('closes on outside click (closedby=any)', p?.getAttribute('closedby') === 'any');
+chk('settings loaded from storage',
+    p?.querySelector('#wv-active')?.checked === true &&
+    p?.querySelector('[data-q="net"]')?.classList.contains('btn-active'));
+
+// --- 3. do the controls write? -------------------------------------------------
+p.querySelector('[data-q="max"]').click();
+await new Promise(r => setTimeout(r, 80));
+chk('changing the quality is stored', store.quality === 'max', `quality = ${store.quality}`);
+chk('the active button follows the selection',
+    p.querySelector('[data-q="max"]').classList.contains('btn-active'));
+
+const op = p.querySelector('#wv-op');
+op.value = 45; op.dispatchEvent(new Event('input'));
+await new Promise(r => setTimeout(r, 80));
+chk('opacity stored', Math.abs(store.opacity - 0.45) < 0.001, `opacity = ${store.opacity}`);
+
+const toggle = p.querySelector('#wv-active');
+toggle.checked = false; toggle.dispatchEvent(new Event('change'));
+await new Promise(r => setTimeout(r, 80));
+chk('toggle stored', store.active === false);
+
+// clearing the cache cannot be undone: it goes through a confirmation
+p.querySelector('#wv-emptyr').click();
+await new Promise(r => setTimeout(r, 150));
+chk('clearing asks for confirmation', document.getElementById('wv-confirme')?.open === true);
+chk('nothing is cleared until we confirm', cacheClears === 0);
+document.getElementById('wv-confirme').querySelector('#wv-confirme-non').click();
+await new Promise(r => setTimeout(r, 150));
+chk('cancelling clears nothing', !document.getElementById('wv-confirme').open && cacheClears === 0);
+p.querySelector('#wv-emptyr').click();
+await new Promise(r => setTimeout(r, 150));
+document.getElementById('wv-confirme').querySelector('#wv-confirme-oui').click();
+await new Promise(r => setTimeout(r, 250));
+chk('confirming passes the clear on', cacheClears === 1);
+
+// --- 3b. wplace adds a button: ours must go back underneath -------------------
+{
+  const added = document.createElement('button');
+  added.className = 'btn btn-square shadow-md';
+  added.title = 'New wplace button';
+  added.textContent = 'N';
+  document.getElementById('bar').appendChild(added);       // it lands AFTER ours
+  await new Promise(r => setTimeout(r, 900));
+  chk('a button added by wplace does not get ahead of us',
+      document.getElementById('bar').lastElementChild === document.getElementById('wv-bouton'),
+      'last = ' + document.getElementById('bar').lastElementChild?.title);
+  chk('no duplicated button', document.querySelectorAll('#wv-bouton').length === 1);
+  added.remove();
+}
+
+// --- 4. surviving Svelte re-renders --------------------------------------------
+b.remove();
+// the watch is deliberately spaced out by 500 ms so as not to make the map lag:
+// we let a whole slice go by before checking
+await new Promise(r => setTimeout(r, 900));
+chk('button laid back after removal (Svelte re-render)', !!document.getElementById('wv-bouton'));
+
+// and the check must above all not run in a loop
+let checks = 0;
+const counter = new MutationObserver(() => checks++);
+counter.observe(document.body, { childList: true, subtree: true });
+for (let i = 0; i < 40; i++) {           // 40 mutations in a burst
+  const d = document.createElement('span'); document.body.appendChild(d); d.remove();
+}
+await new Promise(r => setTimeout(r, 700));
+counter.disconnect();
+chk('the watch is properly throttled (no loop on every mutation)',
+    document.querySelectorAll('#wv-bouton').length === 1,
+    `${checks} mutations observed, 1 single button`);
+
+// --- 5. closing on outside click ------------------------------------------------
+const dlg = document.getElementById('wv-panneau');
+dlg.close();
+await new Promise(r => setTimeout(r, 80));
+chk('modal closed again', dlg.open === false);
+chk('the toolbar button does not stay lit',
+    !document.getElementById('wv-bouton').classList.contains('btn-primary'));
+
+
+// ---------------------------------------------------------------------------
+// 12. Localisation: no hardcoded string, everything comes from _locales
+// ---------------------------------------------------------------------------
+{
+  const pp = document.getElementById('wv-panneau');
+  const txt = pp.textContent;
+  chk('title translated', pp.querySelector('h3').textContent === TEXTS.panelTitle, TEXTS.panelTitle);
+  chk('quality buttons translated',
+      ['Light','Sharp','Live'].every(l => txt.includes(l)),
+      [...pp.querySelectorAll('[data-q]')].map(b => b.textContent).join(' / '));
+  chk('toggle and opacity translated', txt.includes('Enable') && txt.includes('Opacity'));
+  // The needles are the built-in French fallbacks this panel must never show.
+  // Their accents are built with fromCharCode: the guard keeps working without
+  // putting a single non-ASCII byte back into the source.
+  const E = String.fromCharCode(233);                        // e acute
+  const FRENCH = new RegExp(['Vue mondiale', 'Activer', 'Qualit' + E,
+                             'Vider le cache', 'Opacit' + E].join('|'));
+  chk('no hardcoded French string', !FRENCH.test(txt));
+  chk('button title translated',
+      document.getElementById('wv-bouton').title === TEXTS.panelTitle);
+
+  // the {DATE} / {N} substitutions must be replaced
+  await new Promise(r => setTimeout(r, 200));
+  const info = pp.querySelector('#wv-infos').textContent;
+  chk('the text variables are substituted',
+      !info.includes('$') && info.includes('137'), info.replace(/\s+/g,' ').slice(0, 70));
+}
+
+// ---------------------------------------------------------------------------
+// 13. The _locales files as Chrome will REALLY read them
+// ---------------------------------------------------------------------------
+// An undeclared dollar marker makes the WHOLE extension fail to load, with
+// "Could not load manifest file" as the only message. It happened twice -- the
+// second time because we believed we could escape with $$, which protects
+// NOTHING.
+//
+// So we replay here the exact loop of MapBundle::ReplaceVariables: look for a $,
+// look for the next $, and if the name in between is empty or invalid, ADVANCE
+// BY A SINGLE NOTCH. That last point is the trap: on $$NAME$$, the first pass
+// reads an empty name, the next one restarts and does read NAME.
+{
+  const $ = String.fromCharCode(36);
+  const validName = (n) => !!n && /^[A-Za-z0-9_]+$/.test(n);
+  const claimed = (message) => {
+    const names = [];
+    let i = 0;
+    for (;;) {
+      let start = message.indexOf($, i);
+      if (start < 0) return names;
+      start += 1;
+      if (start >= message.length) return names;
+      const end = message.indexOf($, start);
+      if (end < 0) return names;
+      const name = message.slice(start, end);
+      if (!validName(name)) { i = start; continue; }
+      names.push(name);
+      i = end + 1;
+    }
+  };
+
+  // is the parser faithful? we try it on the cases that trapped us
+  chk('the parser reproduces Chrome rule',
+      JSON.stringify(claimed('Cache: ' + $ + 'N' + $)) === '["N"]'
+      && JSON.stringify(claimed('Cache: ' + $ + $ + 'N' + $ + $)) === '["N"]'
+      && JSON.stringify(claimed('Cache: {N} / {MAX}')) === '[]',
+      'including that the double dollar protects nothing');
+
+  const faults = [];
+  let total = 0;
+  const msgsBy = {};
+  for (const lang of ['en', 'pt_BR']) {
+    const msgs = await (await fetch(`./extension/_locales/${lang}/messages.json` + CACHEBUST)).json();
+    total += Object.keys(msgs).length;
+    msgsBy[lang] = msgs;
+    for (const [key, val] of Object.entries(msgs)) {
+      const declared = new Set(Object.keys(val.placeholders || {}).map((x) => x.toLowerCase()));
+      for (const name of claimed(val.message || '')) {
+        if (!declared.has(name.toLowerCase())) faults.push(`${lang}/${key} : ${name}`);
+      }
+    }
+  }
+  chk('no message claims a variable from Chrome', faults.length === 0,
+      faults.length ? faults.join(', ') : `${total} messages read back`);
+
+  // our own markers are in braces, and our substitutions must come out right
+  const substitute = (template, values) =>
+    Object.entries(values).reduce((t, [k, v]) => t.split('{' + k + '}').join(v), template);
+  const cache = substitute(msgsBy.en.cacheState.message, { N: 137, MAX: 500 });
+  chk('the interface substitutions work on the real texts',
+      cache.includes('137') && cache.includes('500') && !cache.includes('{'), cache);
+  const res = substitute(msgsBy.en.reserveProgress.message, { DONE: 1832, TOTAL: 5461, MB: 58 });
+  chk('same for the world reserve',
+      res.includes('1832') && res.includes('5461') && !res.includes('{'), res);
+  chk('English and Brazilian Portuguese have the same keys',
+      JSON.stringify(Object.keys(msgsBy.en).sort()) === JSON.stringify(Object.keys(msgsBy['pt_BR']).sort()),
+      `${Object.keys(msgsBy.en).length} keys`);
+}
+
+// ---------------------------------------------------------------------------
+// 14. The language comes from WPLACE, not from the browser
+// ---------------------------------------------------------------------------
+{
+  await import('./extension/language.js' + CACHEBUST);
+  const l = window.wvLang;
+  chk('language.js exposes wvLang', !!l && typeof l.fromSite === 'function');
+
+  // the key read off wplace's bundle, word for word
+  chk('the key is the Paraglide one', l.KEY === 'PARAGLIDE_LOCALE', l.KEY);
+
+  // their twelve codes -> our two folders
+  const table = [['en', 'en'], ['pt', 'pt_BR'], ['pt-BR', 'pt_BR'], ['pt_PT', 'pt_BR'],
+                 ['fr', 'en'], ['es', 'en'], ['ru', 'en'], ['ch', 'en'], ['jp', 'en']];
+  const misses = table.filter(([raw, expected]) => l.ours(raw) !== expected);
+  chk('the 12 wplace languages land on our 2 locales', misses.length === 0,
+      misses.length ? JSON.stringify(misses) : table.map(([a, b]) => `${a}->${b}`).join(' '));
+
+  chk('"pt" becomes "pt_BR" (Chrome demands the region)', l.ours('pt') === 'pt_BR');
+  chk('a language we do not have falls back to English', l.ours('fr') === 'en',
+      'wplace has an fr, we do not');
+  chk('nothing at all returns nothing', l.ours(null) === null && l.ours('') === null,
+      'up to the caller to fall back on chrome.i18n');
+
+  // fromSite: the page storage first, <html lang> next
+  const makeDoc = (lang) => ({ documentElement: { getAttribute: () => lang } });
+  const makeStorage = (v) => ({ getItem: () => v });
+  const brokenStorage = { getItem: () => { throw new Error('storage blocked'); } };
+
+  chk('the choice kept by wplace is the source of truth',
+      l.fromSite(makeDoc('en'), makeStorage('pt')) === 'pt_BR',
+      'localStorage pt + <html lang=en> -> pt_BR');
+  chk('failing that, we read the <html lang> the site sets itself',
+      l.fromSite(makeDoc('pt'), makeStorage(null)) === 'pt_BR');
+  chk('a blocked storage does not bring everything down',
+      l.fromSite(makeDoc('pt'), brokenStorage) === 'pt_BR',
+      'private browsing, cookies refused...');
+  chk('no signal at all -> null, and chrome.i18n takes over',
+      l.fromSite(makeDoc(null), makeStorage(null)) === null);
+  chk('a site in French leaves us in English',
+      l.fromSite(makeDoc('fr'), makeStorage('fr')) === 'en');
+
+  // and the two folders aimed at do exist
+  const folders = [...new Set(table.map(([r]) => l.ours(r)))];
+  const present = await Promise.all(folders.map(async (d) =>
+    (await fetch(`./extension/_locales/${d}/messages.json` + CACHEBUST)).ok));
+  chk('the locales aimed at all exist', present.every(Boolean),
+      folders.join(', '));
+
+  // texts.json: the PLAIN copy of _locales/, the one the service worker and the
+  // popup really read. Generated by tools/generate_texts.py -- so it can drift
+  // out of sync if a locale is edited without rerunning it.
+  const all = await (await fetch('./extension/texts.json' + CACHEBUST)).json();
+  chk('texts.json covers exactly our locales',
+      JSON.stringify(Object.keys(all).sort()) === JSON.stringify(folders.slice().sort()),
+      Object.keys(all).join(', '));
+
+  const diffs = [];
+  for (const d of folders) {
+    const src = await (await fetch(`./extension/_locales/${d}/messages.json` + CACHEBUST)).json();
+    for (const key of Object.keys(src)) {
+      if (all[d]?.[key] !== src[key].message) diffs.push(`${d}/${key}`);
+    }
+    for (const key of Object.keys(all[d] || {})) {
+      if (!(key in src)) diffs.push(`${d}/${key} (extra)`);
+    }
+  }
+  chk('texts.json is up to date with _locales/', diffs.length === 0,
+      diffs.length ? diffs.slice(0, 5).join(', ')
+                   : `${folders.length} x ${Object.keys(all[folders[0]]).length} identical labels`);
+}
+
+say('\n' + (L.some(x => x.includes('FAIL'))
+  ? '<span class=ko><b>SOME TESTS FAIL</b></span>'
+  : '<span class=ok><b>ALL TESTS PASS</b></span>'));
+</script>

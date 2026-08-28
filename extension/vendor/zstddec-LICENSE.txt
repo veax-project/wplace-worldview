@@ -1,0 +1,8 @@
+zstddec — decodeur Zstandard en WebAssembly
+https://github.com/donmccurdy/zstddec
+
+L'enveloppe JavaScript est sous licence MIT (Don McCurdy).
+Le decodeur lui-meme est Zstandard, de Yann Collet / Facebook, compile en
+WebAssembly et embarque en base64 dans le fichier, sous licence BSD 3-Clause.
+
+Les deux textes complets sont inclus a la fin de vendor/zstddec.js.

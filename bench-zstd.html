@@ -1,0 +1,134 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- zstd in WebAssembly against JavaScript</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px;margin:0}
+  h2{font-size:13px;margin:20px 0 6px;color:#7ee7a8}
+  table{border-collapse:collapse;margin:6px 0 14px}
+  th,td{padding:3px 14px 3px 0;text-align:right;white-space:nowrap}
+  th{color:#8b93a1;font-weight:400;border-bottom:1px solid #2a2e36}
+  td:first-child,th:first-child{text-align:left}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .fort{color:#ffb454} .dim{opacity:.55}
+  #log{white-space:pre-wrap}
+</style>
+<div id="log">measuring...</div>
+
+<script type="module">
+/*
+ * zstd decoding is the biggest single item in the cost of a tile: ~23 ms on a
+ * dense tile, against ~12 ms for the createImageBitmap MapLibre does and that
+ * we cannot avoid. So that is where there is something to gain.
+ *
+ * fzstd is pure JavaScript (MIT). zstddec embeds the reference zstd compiled to
+ * WebAssembly (MIT for the wrapper, BSD for zstd itself).
+ *
+ * Before replacing anything: is it really faster, and above all does it produce
+ * EXACTLY the same bytes? A decoder that goes fast but differs by one byte is
+ * of no use at all.
+ */
+const CACHEBUST = '?v=' + Date.now();
+const el = document.getElementById('log');
+const L = [];
+const say = (s) => { L.push(s); el.innerHTML = L.join('\n'); };
+const chk = (n, c, d) => say(`${c ? '<span class=ok>[OK]  </span>' : '<span class=ko>[FAIL]</span>'} ${n}${d ? '  <span class=dim>-- ' + d + '</span>' : ''}`);
+const kb = (n) => (n / 1024).toFixed(0);
+const timeIt = async (n, f) => {
+  const t = [];
+  for (let i = 0; i < n; i++) { const a = performance.now(); await f(); t.push(performance.now() - a); }
+  t.sort((x, y) => x - y);
+  return t[t.length >> 1];
+};
+
+const { decompress } = await import('./extension/vendor/fzstd.js' + CACHEBUST);
+const { ZSTDDecoder } = await import('./extension/vendor/zstddec.js' + CACHEBUST);
+
+// The archive's streams do NOT carry their decompressed size: without an
+// explicit bound, ZSTD_findDecompressedSize returns anything at all and the
+// bytes come out wrong. That is the trap that made the twenty-nine streams of
+// this bench fail.
+const LIMIT = 4 << 20;
+const wasm = new ZSTDDecoder();
+const t0 = performance.now();
+await wasm.init();
+chk('WebAssembly decoder initialised', true, `${(performance.now() - t0).toFixed(0)} ms, once only`);
+
+// our container: [uint32 version][uint32 size][zstd stream] x N
+function streams(u8) {
+  const v = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const out = [];
+  let o = 0;
+  while (o + 8 <= u8.length) {
+    const size = v.getUint32(o + 4, true);
+    if (size === 0 || o + 8 + size > u8.length) break;
+    out.push(u8.subarray(o + 8, o + 8 + size));
+    o += 8 + size;
+  }
+  return out;
+}
+
+const TILES = ['5_16_11', '6_32_22', '6_18_24', '7_64_44', '7_113_50', '9_259_176', '11_1037_704'];
+const rows = [];
+let identical = 0, total = 0;
+
+for (const key of TILES) {
+  const raw = new Uint8Array(await (await fetch(`./tiles/${key}.zst`)).arrayBuffer());
+  const chunks = streams(raw);
+
+  // --- fidelity: every stream must produce the same bytes
+  let diffs = 0, bytes = 0;
+  for (const f of chunks) {
+    const a = decompress(f);
+    const b = wasm.decode(f, LIMIT);
+    bytes += a.length;
+    total++;
+    if (a.length !== b.length) { diffs++; continue; }
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { diff++; break; }
+    if (diff) diffs++; else identical++;
+  }
+
+  const msJs = await timeIt(5, () => { for (const f of chunks) decompress(f); });
+  const msWasm = await timeIt(5, () => { for (const f of chunks) wasm.decode(f, LIMIT); });
+
+  rows.push({ key, chunks: chunks.length, size: raw.byteLength, bytes,
+              msJs, msWasm, diffs });
+}
+
+say('<h2>Fidelity: do the two decoders produce the same bytes?</h2>');
+chk(`${identical}/${total} streams strictly identical`, identical === total,
+    identical === total ? 'byte for byte' : `${total - identical} stream(s) diverge`);
+
+say('<h2>Speed</h2>');
+say('<table><tr><th>tile</th><th>streams</th><th>.zst</th><th>decoded</th>' +
+    '<th>fzstd (JS)</th><th>zstddec (WASM)</th><th>gain</th></tr>' +
+    rows.map((l) => {
+      const g = l.msJs / l.msWasm;
+      return `<tr><td>${l.key}</td><td>${l.chunks}</td><td>${kb(l.size)} KB</td>` +
+        `<td>${kb(l.bytes)} KB</td><td class=fort>${l.msJs.toFixed(1)} ms</td>` +
+        `<td class=ok>${l.msWasm.toFixed(1)} ms</td>` +
+        `<td class="${g > 1.5 ? 'ok' : g < 1 ? 'ko' : ''}"><b>x${g.toFixed(1)}</b></td></tr>`;
+    }).join('') + '</table>');
+
+const sJs = rows.reduce((s, l) => s + l.msJs, 0);
+const sWasm = rows.reduce((s, l) => s + l.msWasm, 0);
+say(`  over the ${rows.length} tiles: <b class=fort>${sJs.toFixed(0)} ms</b> in JavaScript, ` +
+    `<b class=ok>${sWasm.toFixed(0)} ms</b> in WebAssembly -- <b>x${(sJs / sWasm).toFixed(1)}</b>`);
+
+// what that changes for the total cost of a tile
+{
+  const avgJs = sJs / rows.length, avgWasm = sWasm / rows.length;
+  const OTHERS = 15 + 6 + 12 + 15;   // base64+data:, BGRA+BMP, createImageBitmap, hops
+  say('<h2>Effect on the full cost of a tile</h2>');
+  say(`  decoding alone      ${avgJs.toFixed(0)} ms -> <b class=ok>${avgWasm.toFixed(0)} ms</b>`);
+  say(`  the rest (measured) ${OTHERS} ms  <span class=dim>base64 15, BGRA/BMP 6, createImageBitmap 12, messages 15</span>`);
+  say(`  total per tile      ${(avgJs + OTHERS).toFixed(0)} ms -> ` +
+      `<b class=ok>${(avgWasm + OTHERS).toFixed(0)} ms</b>  ` +
+      `i.e. <b>-${Math.round((1 - (avgWasm + OTHERS) / (avgJs + OTHERS)) * 100)} %</b>`);
+}
+
+say(`\n<span class=dim>zstddec: ${kb(76029)} KB, WebAssembly embedded as base64 in the file</span>`);
+say('\n' + (L.some((x) => x.includes('[FAIL]'))
+  ? '<span class=ko><b>SOME TESTS FAIL</b></span>'
+  : '<span class=ok><b>ALL TESTS PASS</b></span>'));
+window.__done = true;
+</script>

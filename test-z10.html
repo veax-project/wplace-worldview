@@ -1,0 +1,147 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test bench -- rebuilding the z10 level</title>
+<style>
+  body{font:13px/1.6 ui-monospace,monospace;background:#14161a;color:#dfe2e8;padding:22px}
+  .ok{color:#7ee7a8} .ko{color:#ff6b8a} .dim{opacity:.55}
+  #log{white-space:pre-wrap;margin-bottom:16px}
+  #views{display:flex;gap:16px;flex-wrap:wrap}
+  figure{margin:0}
+  canvas{image-rendering:pixelated;border:1px solid #2e3138;border-radius:6px;background:#fff;
+    width:420px;height:420px}
+  figcaption{font-size:11px;opacity:.75;margin-top:5px;max-width:420px}
+</style>
+<div id="log">running...</div>
+<div id="views"></div>
+
+<script type="module">
+// ES modules are cached independently of the page: without this parameter we
+// read the old code back after a change
+const CACHEBUST = '?v=' + Date.now();
+const L=[], el=document.getElementById('log');
+const say=s=>{L.push(s);el.innerHTML=L.join('\n')};
+const chk=(n,c,d)=>say(`${c?'<span class=ok>[OK]  </span>':'<span class=ko>[FAIL]</span>'} ${n}${d?'  <span class=dim>-- '+d+'</span>':''}`);
+
+const { decodeTile, toImageData, PALETTE } = await import('./extension/decoder.js' + CACHEBUST);
+const { composeBgra, toBmp, toBgra, bgraFromBitmaps, quadrantsOf } =
+  await import('./extension/image.js' + CACHEBUST);
+
+const read = async (key) => new Uint8Array(await (await fetch(`./tiles/${key}.zst`)).arrayBuffer());
+
+// --- 1. does quadrantsOf give the right z11 tiles? -------------------------
+const q = quadrantsOf(518, 352);
+chk('quadrantsOf(518,352) -> the 4 expected z11 tiles',
+    JSON.stringify(q.map(o => `${o.x}/${o.y}`)) === JSON.stringify(['1036/704','1037/704','1036/705','1037/705']),
+    q.map(o => `${o.x}/${o.y}`).join(' '));
+
+// --- 2. composing from the decoded indexes (archive path) -------------------
+const t0 = performance.now();
+const pieces = [];
+for (const o of q) {
+  try { pieces.push({ dx: o.dx, dy: o.dy, ...decodeTile(await read(`11_${o.x}_${o.y}`)) }); }
+  catch (e) { /* tile missing from the test set */ }
+}
+chk('4 quadrants decoded', pieces.length === 4, `${pieces.length}/4`);
+
+const bgra = composeBgra(pieces, PALETTE);
+const z10 = toBmp(1000, 1000, bgra);
+const msZ10 = performance.now() - t0;
+const bmp10 = await createImageBitmap(new Blob([z10], { type: 'image/png' }));   // lying type, on purpose
+chk('z10 tile rebuilt', bmp10.width === 1000 && bmp10.height === 1000,
+    `${bmp10.width}x${bmp10.height}, ${Math.round(z10.byteLength/1024)} KB, ${msZ10.toFixed(0)} ms`);
+chk('a BMP announced as "image/png" decodes all the same',
+    bmp10.width === 1000,
+    'MapLibre hard-codes that type: this is what makes the BMP usable');
+
+// --- 3. edge cases ----------------------------------------------------------
+chk('no quadrant -> null (nothing to show)', composeBgra([], PALETTE) === null);
+const partial = composeBgra(pieces.slice(0, 2), PALETTE);
+chk('partial quadrants accepted', !!partial, partial ? `${(partial.byteLength/1048576).toFixed(1)} MB of BGRA` : '');
+
+// --- 4. does the BMP render exactly like the PNG? ----------------------------
+{
+  const { width: mw, height: mh, index: mIndex } = pieces[0];
+  const via = async (buf) => {
+    const im = await createImageBitmap(new Blob([new Uint8Array(buf)], { type: 'image/png' }));
+    const [w, h] = [im.width, im.height];
+    const c = new OffscreenCanvas(w, h);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(im, 0, 0); im.close();
+    return g.getImageData(0, 0, w, h).data;
+  };
+  const asBmp = toBmp(mw, mh, toBgra(mw, mh, mIndex, PALETTE));
+  const canvas = new OffscreenCanvas(mw, mh);
+  canvas.getContext('2d').putImageData(toImageData(mw, mh, mIndex), 0, 0);
+  const asPng = await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
+
+  const a = await via(asBmp), b = await via(asPng);
+  let diffs = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const oa = a[i+3] > 0, ob = b[i+3] > 0;
+    if (oa !== ob || (oa && (a[i] !== b[i] || a[i+1] !== b[i+1] || a[i+2] !== b[i+2]))) diffs++;
+  }
+  chk('BMP and PNG give the same pixels, transparency included', diffs === 0,
+      `${(a.length/4).toLocaleString('en')} pixels compared, ${diffs} difference(s)`);
+}
+
+// --- 5. bgraFromBitmaps: the Direct mode path --------------------------------
+{
+  const asBitmap = async ({ dx, dy, width: w, height: h, index }) => {
+    const c = new OffscreenCanvas(w, h);
+    c.getContext('2d').putImageData(toImageData(w, h, index), 0, 0);
+    return { dx, dy, bmp: await createImageBitmap(await c.convertToBlob({ type: 'image/png' })) };
+  };
+  const bitmaps = await Promise.all(pieces.map(asBitmap));
+  const viaBitmaps = toBmp(1000, 1000, bgraFromBitmaps(bitmaps));
+  const im = await createImageBitmap(new Blob([viaBitmaps], { type: 'image/png' }));
+  chk('bgraFromBitmaps (Direct mode) produces the same geometry',
+      im.width === 1000 && im.height === 1000, `${im.width}x${im.height}`);
+  im.close();
+  chk('bgraFromBitmaps with no quadrant -> null', bgraFromBitmaps([]) === null);
+}
+
+// --- 6. quality: rebuilt z10 VS upscaled z9 ----------------------------------
+const draw = async (buf, caption, source) => {
+  const b = await createImageBitmap(new Blob([new Uint8Array(buf)], { type: 'image/png' }));
+  const c = document.createElement('canvas'); c.width = c.height = 1000;
+  const g = c.getContext('2d', {willReadFrequently:true});
+  g.imageSmoothingEnabled = false;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, 1000, 1000);
+  // Same geographic area: the z10 tile (518,352) is quadrant (0,0) of the z9
+  // (259,176), so its top-left 500x500.
+  g.drawImage(b, ...(source === 'z9'
+    ? [0, 0, 500, 500, 0, 0, 1000, 1000]
+    : [0, 0, 1000, 1000, 0, 0, 1000, 1000]));
+  b.close();
+  const f = document.createElement('figure');
+  f.appendChild(c);
+  const cap = document.createElement('figcaption'); cap.innerHTML = caption;
+  f.appendChild(cap);
+  document.getElementById('views').appendChild(f);
+  // SPATIAL detail: number of colour changes between neighbouring pixels.
+  // (counting the distinct colours is pointless: the palette has 64 shades,
+  //  and both images saturate it.)
+  const d = g.getImageData(0, 0, 1000, 1000).data;
+  let n = 0;
+  for (let y = 0; y < 1000; y++) for (let x = 0; x < 999; x++) {
+    const i = (y * 1000 + x) * 4, j = i + 4;
+    if (d[i] !== d[j] || d[i+1] !== d[j+1] || d[i+2] !== d[j+2]) n++;
+  }
+  return n;
+};
+
+const { width: w9, height: h9, index: i9 } = decodeTile(await read('9_259_176'));
+const z9 = toBmp(w9, h9, toBgra(w9, h9, i9, PALETTE));
+
+const nZ9  = await draw(z9,  '<b>WITHOUT reconstruction</b> -- z9 tile upscaled 2x', 'z9');
+const nZ10 = await draw(z10, '<b>WITH reconstruction</b> -- z10 from 4 z11 tiles', 'z10');
+
+chk('the rebuilt z10 holds ~2x more detail than the upscaled z9',
+    nZ10 > nZ9 * 1.6,
+    `${nZ9.toLocaleString('en')} -> ${nZ10.toLocaleString('en')} transitions, i.e. x${(nZ10/nZ9).toFixed(2)}`);
+
+say('\n' + (L.some(x => x.includes('FAIL'))
+  ? '<span class=ko><b>SOME TESTS FAIL</b></span>'
+  : '<span class=ok><b>ALL TESTS PASS</b></span>'));
+window.__done = true;
+</script>

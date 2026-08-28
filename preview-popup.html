@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Preview -- extension popup</title>
+<!--
+  Renders extension/popup.html as it will look, in both system themes.
+
+  The popup leans on chrome.i18n and chrome.runtime, absent outside an
+  extension: we simulate them here by reading the REAL _locales files, so the
+  preview shows the real texts and not made-up labels.
+
+      py -3 tools/capture.py "preview-popup.html?lang=pt_BR" popup.png 700 620 6000
+-->
+<style>
+  html, body { margin: 0; background: #0f1115; }
+  .duo { display: flex; gap: 14px; padding: 14px;
+         font: 12px/1.5 ui-monospace, monospace; color: #aab; }
+  figure { margin: 0 }
+  iframe { width: 300px; border: 1px solid #2a2e36; border-radius: 10px; }
+  figcaption { padding: 7px 2px }
+</style>
+
+<script type="module">
+const P = new URLSearchParams(location.search);
+const LANG = P.get('lang') || 'en';
+const THEME = P.get('theme');
+
+if (!THEME) {
+  document.body.innerHTML = `<div class="duo">${['light', 'dark'].map((t) => `
+    <figure>
+      <iframe src="?lang=${LANG}&theme=${t}" style="height:${t === 'dark' ? 430 : 430}px"></iframe>
+      <figcaption>theme <b>${t}</b> - lang <b>${LANG}</b></figcaption>
+    </figure>`).join('')}</div>`;
+} else {
+  // We simulate what popup.js uses, and nothing more.
+  //
+  // The popup no longer reads chrome.i18n first: it follows WPLACE's language,
+  // dropped into chrome.storage.local by the content script. So we simulate
+  // both paths -- i18n returns ENGLISH (the browser language, our fallback),
+  // and storage announces the language asked for in the URL. If the preview
+  // shows Portuguese, then it really is the second path that ran.
+  const hardEn = await (await fetch(`./extension/_locales/en/messages.json?v=${Date.now()}`)).json();
+  window.chrome = {
+    i18n: { getMessage: (c) => (hardEn[c] ? hardEn[c].message : '') },
+    runtime: {
+      getManifest: () => ({ version: '1.0.0' }),
+      getURL: (path) => `./extension/${path}?v=${Date.now()}`,
+    },
+    storage: { local: { get: async () => ({ siteLanguage: LANG }) } },
+  };
+  await import('./extension/language.js?v=' + Date.now());
+  const html = await (await fetch('./extension/popup.html?v=' + Date.now())).text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  for (const s of doc.querySelectorAll('style')) document.head.appendChild(s.cloneNode(true));
+  document.documentElement.dataset.theme = THEME;
+  document.documentElement.style.colorScheme = THEME;
+  document.body.replaceWith(doc.body.cloneNode(true));
+  await import('./extension/popup.js?v=' + Date.now());
+}
+</script>

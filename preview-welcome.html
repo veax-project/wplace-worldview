@@ -1,0 +1,180 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Preview -- welcome bubble</title>
+
+<!--
+  Visual rendering of the welcome bubble in BOTH wplace themes (custom-winter
+  and dark), with their real stylesheet and the real ui.js.
+
+  With no parameter: the page shows both themes side by side, each in an iframe
+  that reloads this very file with ?theme=...
+
+  ?view=confirm additionally opens the settings and the cache-clearing
+  confirmation window, to see it stacked on top of the settings one.
+
+      py -3 tools/capture.py preview-welcome.html preview-bubble.png 1400 470
+      py -3 tools/capture.py "preview-welcome.html?view=confirm" confirmation.png 1400 620
+-->
+
+<script>
+  // the theme has to be set before the stylesheet applies
+  const PARAMS = new URLSearchParams(location.search);
+  const THEME = PARAMS.get('theme');
+  const VIEW = PARAMS.get('view') || 'bubble';
+  if (THEME) document.documentElement.dataset.theme = THEME;
+</script>
+
+<style>
+  html, body { height: 100%; margin: 0; }
+</style>
+
+<script type="module">
+const duo = !THEME;
+
+if (duo) {
+  // ------------------------------------------------------------------ overview
+  document.body.innerHTML = `
+    <div style="display:flex;font:12px/1.5 ui-monospace,monospace;background:#0f1115;color:#aab">
+      ${['custom-winter', 'dark'].map((t) => `
+        <figure style="margin:0;padding:10px">
+          <iframe src="?theme=${t}&view=${VIEW}${PARAMS.get('lang') ? '&lang=' + PARAMS.get('lang') : ''}" style="width:660px;
+                  height:${VIEW === 'bubble' ? 420 : 700}px;border:1px solid #2a2e36;
+                  border-radius:10px" title="${t}"></iframe>
+          <figcaption style="padding:7px 2px">theme <b>${t}</b>${PARAMS.get('lang') ? ' - lang <b>' + PARAMS.get('lang') + '</b>' : ''}</figcaption>
+        </figure>`).join('')}
+    </div>`;
+} else {
+  // -------------------------------------------------------- a real instance
+  for (const f of ['./proof/wplace.css', './proof/wplace2.css']) {
+    const l = document.createElement('link');
+    l.rel = 'stylesheet'; l.href = f;
+    document.head.appendChild(l);
+  }
+
+  document.body.innerHTML = `
+    <div style="position:fixed;inset:0;background:
+        repeating-conic-gradient(#7fd 0 25%, #cfe 0 50%) 0 0/24px 24px,
+        repeating-linear-gradient(45deg,#f7c 0 12px,#fda 12px 24px);opacity:.55"></div>
+    <div style="position:fixed;left:14px;top:14px;font:12px/1.4 ui-monospace,monospace;
+         opacity:.6" class="text-base-content">wplace map (simulated)</div>
+    <div class="fixed top-3 right-3 z-30">
+      <div class="flex flex-col items-center gap-3" id="bar">
+        <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Store">S</button>
+        <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Leaderboard">L</button>
+        <button class="btn btn-lg btn-square sm:btn-xl shadow-md" title="Overlays">O</button>
+      </div>
+    </div>`;
+
+  const TEXTS = {
+    panelTitle: 'World view', panelIntro: '', enable: 'Enable', quality: 'Quality',
+    qualityLight: 'Light', qualitySharp: 'Sharp', qualityLive: 'Live',
+    helpLight: 'Least data. Slightly blurry between zoom 9.5 and 10.6.',
+    helpSharp: 'Rebuilds the missing zoom level from the archive.',
+    helpLive: 'Rebuilds from wplace directly: up to the second.',
+    opacity: 'Opacity',
+    clearCache: 'Clear cache', clearing: 'Clearing...', close: 'close',
+    archiveUnreachable: '', freshnessLive: '',
+    freshnessArchive: 'Snapshot from <b>{DATE}</b>{BEHIND}',
+    behind: ' -- <b>{H} h</b> behind', cacheState: 'Cache: <b>{N}</b> / {MAX} tiles',
+    clearTitle: 'Clear the cache?',
+    clearText: 'Stored tiles will be deleted. They come back on their own as you browse, '
+              + 'so nothing is lost -- the map will just be slower for a moment.',
+    clearConfirm: 'Clear', cancel: 'Cancel',
+    welcomeTitle: 'WorldView is installed',
+    showTitle: 'Right here',
+    showText: "This is WorldView's button, tucked into wplace's own toolbar. "
+               + 'Click it for quality, opacity and the map download.',
+    welcomeText: "Its settings live right here, in wplace's own toolbar. "
+                + 'Click the globe to change quality or opacity.',
+    welcomeGotIt: 'Got it',
+    reserveTitle: 'Download the world',
+    reserveText: 'Downloads the wide zoom levels once and keeps them. After that, '
+                + 'zooming out is instant. You can close this window and keep playing -- '
+                + 'it continues in the background, and the button shows how far along it is.',
+    reserveWorld: 'World - 175 MB', reserveDetailed: 'Detailed - 510 MB',
+    reserveProgress: '{DONE} / {TOTAL} tiles - {MB} MB', reserveStop: 'Stop',
+    reserveReady: 'Ready - {N} tiles stored', reserveDelete: 'Delete',
+    reserveRemaining: ' - ~{MIN} min left',
+    reserveClearTitle: 'Delete the downloaded map?',
+    reserveClearText: 'The stored levels will be removed. Zooming out will load from the '
+                     + 'network again, and downloading them back takes several minutes.',
+    reserveDoneTitle: 'Map downloaded',
+    reserveDoneText: '{N} tiles stored. Zooming out is instant from now on -- enjoy.',
+    reserveCourtesy: 'The archive is served through a CDN with a 4-hour cache, '
+                     + 'so most of this never reaches the origin machine.',
+  };
+
+  // ?lang=pt_BR: we replace the sample labels with the REAL texts of the
+  // locale. Portuguese is markedly longer than English -- it is the only way
+  // to see whether the panel and the bubble overflow.
+  const LANG = PARAMS.get('lang');
+  if (LANG) {
+    const msgs = await (await fetch(`./extension/_locales/${LANG}/messages.json?v=${Date.now()}`)).json();
+    for (const key of Object.keys(TEXTS)) {
+      if (msgs[key]) TEXTS[key] = msgs[key].message;
+    }
+    for (const key of ['showTitle', 'showText', 'safetyNet', 'safetyNetHelp',
+                       'reserveTitle', 'reserveText', 'reserveWorld', 'reserveDetailed']) {
+      if (msgs[key]) TEXTS[key] = msgs[key].message;
+    }
+  }
+
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (e.source !== window || d?.type !== 'wv:action') return;
+    const reply = (v) => window.postMessage({ type: 'wv:return', id: d.id, valeur: v }, '*');
+    if (d.action === 'settings') return reply({ active: true, opacity: 1, quality: 'net', texts: TEXTS });
+    if (d.action === 'welcome') return reply({ remaining: VIEW === 'bubble' ? 3 : 0 });
+    if (d.action === 'reserveState') return reply({ ok: true, etat:
+      VIEW === 'reserve' ? { active: true, total: 21845, done: 6120, bytes: 148e6,
+                             startedAt: Date.now() - 42000 }
+      : (VIEW === 'done' || VIEW === 'delete')
+        // FRESH timestamp on every poll: the notice closes itself after twelve
+        // seconds, and the capture's virtual time runs far faster than that.
+        // So we make it show up again on every round.
+        ? { active: false, finished: true, total: 21845, done: 21845, bytes: 512e6,
+            finishedAt: Date.now() }
+      : null });
+    if (d.action === 'stats') return reply({ ok: true, entries: 137, max: 500, quality: 'net',
+                                             version: { date: '2026-08-22T01' } });
+    reply({ ok: true });
+  });
+
+  window.__worldview = { state: {}, map: null, threshold: () => 10.6, maxLayer: () => 10.95 };
+  await import('./extension/ui.js?v=' + Date.now());
+
+  // ?view=show: the SAME bubble, but asked for from the extension popup while
+  // the welcome is already used up (remaining 0). This is what someone who clicks
+  // "Show me the button" sees.
+  if (VIEW === 'show') {
+    await new Promise((r) => setTimeout(r, 500));
+    window.postMessage({ type: 'wv:show-button' }, '*');
+  }
+
+  if (VIEW === 'done') {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    await wait(600);
+    // we replay the notice as the user sees it, without opening the settings
+    window.postMessage({ type: 'wv:action', id: -1, action: 'reserveState' }, '*');
+  }
+
+  if (VIEW === 'settings' || VIEW === 'reserve' || VIEW === 'delete') {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    await wait(400);
+    document.getElementById('wv-bouton').click();
+    if (VIEW === 'delete') {
+      await wait(300);
+      document.getElementById('wv-reserve-emptyr').click();
+    }
+  }
+
+  if (VIEW === 'confirm') {
+    // we walk the real path: button -> settings -> clear -> confirmation
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    await wait(400);
+    document.getElementById('wv-bouton').click();
+    await wait(300);
+    document.getElementById('wv-emptyr').click();
+  }
+}
+</script>
