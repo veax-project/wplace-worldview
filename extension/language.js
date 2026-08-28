@@ -24,8 +24,12 @@
  *     (`o.reload && window.location && e !== a && window.location.reload()`),
  *     so there is nothing for us to watch at runtime.
  *
- * We only have two locales: en and pt_BR. Portuguese lands on pt_BR,
- * everything else on English, which is also our default_locale.
+ * We have three locales: en, pt_BR and fr. Portuguese lands on pt_BR,
+ * French on fr, everything else on English, which is also our default_locale.
+ *
+ * French is worth having: wplace itself speaks it, so a French browser gets a
+ * French wplace without anyone choosing anything — and our panel sat in English
+ * in the middle of it.
  *
  * This file is loaded in the ISOLATED world before content-iso.js, and in the
  * popup before popup.js: both need it, and so does the test bench.
@@ -37,7 +41,7 @@
   const KEY = 'PARAGLIDE_LOCALE';
   // wplace's codes are not Chrome's: "pt" on their side, "pt_BR" on ours
   // (Chrome demands the region, and rejects the hyphen)
-  const MAPPING = { pt: 'pt_BR' };
+  const MAPPING = { pt: 'pt_BR', fr: 'fr' };
 
   /** Any language code -> one of OUR _locales folders. */
   function ours(raw) {
