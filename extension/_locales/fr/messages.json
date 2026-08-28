@@ -1,0 +1,167 @@
+{
+  "extensionName": {
+    "message": "Wplace WorldView"
+  },
+  "extensionDescription": {
+    "message": "Voit les dessins de wplace.live même dézoomé, là où le site n’affiche plus rien."
+  },
+  "panelTitle": {
+    "message": "Vue du monde"
+  },
+  "panelIntro": {
+    "message": "Affiche les dessins même dézoomé, là où wplace cesse de les montrer."
+  },
+  "enable": {
+    "message": "Activer"
+  },
+  "quality": {
+    "message": "Qualité"
+  },
+  "qualityLight": {
+    "message": "Léger"
+  },
+  "qualitySharp": {
+    "message": "Net"
+  },
+  "qualityLive": {
+    "message": "Direct"
+  },
+  "helpLight": {
+    "message": "Le moins de données. Légèrement flou entre les zooms 9,5 et 10,6."
+  },
+  "helpSharp": {
+    "message": "Reconstruit le niveau de zoom manquant depuis l’archive. Données vieilles de 1 à 3 jours."
+  },
+  "helpLive": {
+    "message": "Reconstruit directement depuis wplace : à la seconde près, même poids."
+  },
+  "opacity": {
+    "message": "Opacité"
+  },
+  "clearCache": {
+    "message": "Vider le cache"
+  },
+  "clearing": {
+    "message": "Vidage…"
+  },
+  "close": {
+    "message": "fermer"
+  },
+  "archiveUnreachable": {
+    "message": "Archive injoignable."
+  },
+  "freshnessLive": {
+    "message": "De près : <b>direct</b><br>Vue large : <b>{DATE}</b>"
+  },
+  "freshnessArchive": {
+    "message": "Instantané du <b>{DATE}</b>{BEHIND}"
+  },
+  "behind": {
+    "message": " — <b>{H} h</b> de retard"
+  },
+  "cacheState": {
+    "message": "Cache : <b>{N}</b> / {MAX} tuiles"
+  },
+  "settingsInMap": {
+    "message": "Les réglages sont dans la carte, à l’intérieur de la barre d’outils de wplace."
+  },
+  "welcomeTitle": {
+    "message": "WorldView est installé"
+  },
+  "welcomeText": {
+    "message": "Ses réglages sont ici même, dans la barre d’outils de wplace. Cliquez sur le globe pour changer la qualité ou l’opacité."
+  },
+  "welcomeGotIt": {
+    "message": "Compris"
+  },
+  "showTitle": {
+    "message": "Juste ici"
+  },
+  "showText": {
+    "message": "Voici le bouton de WorldView, glissé dans la barre d’outils de wplace. Cliquez dessus pour la qualité, l’opacité et le téléchargement de la carte."
+  },
+  "clearTitle": {
+    "message": "Vider le cache ?"
+  },
+  "clearText": {
+    "message": "Les tuiles stockées seront supprimées. Elles reviennent d’elles-mêmes au fil de la navigation, donc rien n’est perdu — la carte sera simplement plus lente un moment."
+  },
+  "clearConfirm": {
+    "message": "Vider"
+  },
+  "cancel": {
+    "message": "Annuler"
+  },
+  "reserveTitle": {
+    "message": "Télécharger le monde"
+  },
+  "reserveText": {
+    "message": "Télécharge une bonne fois les niveaux de zoom larges et les conserve. Ensuite, dézoomer est instantané. Vous pouvez fermer cette fenêtre et continuer à jouer — ça se poursuit en arrière-plan, et le bouton montre où ça en est."
+  },
+  "reserveWorld": {
+    "message": "Monde · 175 Mo"
+  },
+  "reserveDetailed": {
+    "message": "Détaillé · 510 Mo"
+  },
+  "reserveProgress": {
+    "message": "{DONE} / {TOTAL} tuiles · {MB} Mo"
+  },
+  "reserveStop": {
+    "message": "Arrêter"
+  },
+  "reserveReady": {
+    "message": "Prêt · {N} tuiles stockées"
+  },
+  "reserveDelete": {
+    "message": "Supprimer"
+  },
+  "reserveCourtesy": {
+    "message": "L’archive est servie par un CDN avec un cache de 4 heures : l’essentiel n’atteint donc jamais la machine d’origine."
+  },
+  "reserveRemaining": {
+    "message": " · ~{MIN} min restantes"
+  },
+  "reserveClearTitle": {
+    "message": "Supprimer la carte téléchargée ?"
+  },
+  "reserveClearText": {
+    "message": "Les niveaux stockés seront retirés. Dézoomer chargera de nouveau depuis le réseau, et les retélécharger prend plusieurs minutes."
+  },
+  "reserveDoneTitle": {
+    "message": "Carte téléchargée"
+  },
+  "reserveDoneText": {
+    "message": "{N} tuiles stockées. Dézoomer est instantané à partir de maintenant — profitez-en."
+  },
+  "popupHelp": {
+    "message": "Comment ça marche"
+  },
+  "popupBug": {
+    "message": "Signaler un problème"
+  },
+  "popupEmail": {
+    "message": "M’écrire"
+  },
+  "popupPrivacy": {
+    "message": "Politique de confidentialité"
+  },
+  "popupShow": {
+    "message": "Montrer le bouton"
+  },
+  "popupUnofficial": {
+    "message": "Extension non officielle. Sans lien avec wplace.live."
+  },
+  "reserveDated": {
+    "message": "Vue large : instantané du {DATE}"
+  },
+  "reserveUpdate": {
+    "message": "Mettre à jour"
+  },
+  "safetyNet": {
+    "message": "Filet de sécurité"
+  },
+  "safetyNetHelp": {
+    "message": "S’enclenche tout seul quand les tuiles de wplace cessent de charger : notre couche se glisse sous la leur et montre les dessins archivés au lieu d’une carte vide, puis s’efface dès que wplace se rétablit. Ne coûte rien tant que tout va bien. Activez ceci pour la garder déployée en permanence."
+  }
+}
